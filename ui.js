@@ -8,7 +8,12 @@
     const DIFF = { '易しい': 0.7, '標準': 0.85, '厳しい': 1.0 };
     let meta = E.loadMeta();
     let S = null;
-    const ui = { view: 'title', names: meta.lastNames || E.randomNames(), diff: '標準', pick: 'mediator', sel: [], draftSel: [], modal: null, last: null,
+    const ui = { relView: (() => { try {
+            return localStorage.getItem('decentral-state-relview') || 'table';
+        }
+        catch (e) {
+            return 'table';
+        } })(), view: 'title', names: meta.lastNames || E.randomNames(), diff: '標準', pick: 'mediator', sel: [], draftSel: [], modal: null, last: null,
         prevHand: [], prevPhase: null, fx: {}, fxNow: {}, lastPlay: null, resultDelay: false, anim: null };
     const RCOL = ['#7a4b8c', '#2f6f8f', '#3f7d4e', '#a0612a', '#8c2f3c', '#5b6b2a', '#3b4f8f', '#8a6d2c', '#2f7f7a', '#7a3f6a', '#5e5e5e', '#6a4a2a', '#4a6a8a', '#8a4a4a'];
     const rcol = id => regionColor(id);
@@ -141,13 +146,13 @@
         return `<div class="trans ${tr.cls}"><div class="tr-band"><div class="tr-sub">${esc(tr.sub)}</div><div class="tr-main">${esc(tr.main)}</div>${tr.note ? `<div class="tr-note">${esc(tr.note)}</div>` : ''}</div></div>`;
     }
     function regionChip(id) {
-        const r = S && E.regionById(S, id);
+        const r = S ? E.regionById(S, id) : (E.RG[id] ? { name: E.RG[id].name, dead: false } : null);
         if (!r)
             return '';
         return `<span class="c-reg ${r.dead ? 'dead' : ''}" style="--rc:${rcol(id)}">${esc(r.name)}</span>`;
     }
     function effectAt(id, lv) { return E.effectAtLv(id, lv); }
-    const WSHORT = { buy: '承認', buyFac: '建設', reroll: '差し替え', sell: '廃止', stamp: '調印', returnPower: '返還', declare: '宣言', discardCard: '捨て札', pass: '見送り', play: '手番', fire: '発動', win: '乗り切り', fail: '失敗', bossWin: 'ボス', damage: '被害', regionDead: '壊滅', relRise: '関係', trustDrop: '信頼低下', fundsSpent: '支出', fundsGain: '収入', event: '出来事', upgrade: '強化', consume: '消失', retrig: '再発動', maxPlay: '全力', singlePlay: '単独', facFire: '施設', leaveParl: '議会', omen: '前触れ', round: 'ラウンド' };
+    const WSHORT = { hkGone: '形見', buy: '承認', buyFac: '建設', reroll: '差し替え', sell: '廃止', stamp: '調印', returnPower: '返還', declare: '宣言', discardCard: '捨て札', pass: '見送り', play: '手番', fire: '発動', win: '乗り切り', fail: '失敗', bossWin: 'ボス', damage: '被害', regionDead: '壊滅', relRise: '関係', trustDrop: '信頼低下', fundsSpent: '支出', fundsGain: '収入', event: '出来事', upgrade: '強化', consume: '消失', retrig: '再発動', maxPlay: '全力', singlePlay: '単独', facFire: '施設', leaveParl: '議会', omen: '前触れ', round: 'ラウンド' };
     function watchText(w, g) { return w ? `${WSHORT[w.ev] || ''} ${g.wc || 0}/${w.n}` : ''; }
     function statusHTML(o) {
         const pills = [];
@@ -163,13 +168,29 @@
             return `<span class="pill" title="${esc(sp.full)}">${ring}<b>${esc(sp.short)}</b><em>${esc(sp.full)}</em></span>`;
         }).join('')}</div>`;
     }
+    const r2u = v => v >= 100 ? Math.round(v) : Math.round(v * 100) / 100;
     function counterText(inst) {
         if (!inst)
             return '';
         const d = CARD[inst.id];
         if (!d.fx)
             return '';
-        const wt = d.fx.find(t => t.watch);
+        if (inst.id === 'cx_doomclock') {
+            const h = inst.g.hands || 0;
+            return { short: `針${h}`, full: `終末時計の針 ${h}/12`, frac: h / 12 };
+        }
+        if (inst.id === 'cx_throne' && inst.g.cUp) {
+            const k = (inst.lv || 0) > 0 ? 0.8 : 0.5;
+            return { short: `+${r2u(k * inst.g.cUp)}`, full: `積み上がった倍率 +${r2u(k * inst.g.cUp)}`, frac: null };
+        }
+        if (inst.id === 'cx_bookburn' && inst.g.burned)
+            return { short: `焼${inst.g.burned}`, full: `これまでに焼いた研究系のカード ${inst.g.burned}枚`, frac: null };
+        if (inst.id === 'curse_collateral') {
+            const n = inst.g.drawn || 0;
+            return { short: `期限${3 - n}`, full: `出さずにあと${3 - n}回引くと地方を失う`, frac: n / 3 };
+        }
+        const fx = E.fxOf(S, inst) || d.fx;
+        const wt = fx.find(t => t.watch);
         if (wt) {
             const w = wt.watch, wc = inst.g.wc || 0;
             let full = `${WSHORT[w.ev] || ''} ${wc}/${w.n}`;
@@ -183,12 +204,27 @@
                 full += ' ・ 目が肥えている';
             return { short: `${wc}/${w.n}`, full, frac: wc / w.n };
         }
-        const lim = d.fx.find(t => t.limited);
+        const gt = fx.find(t => t.grow);
+        if (gt) {
+            const u = inst.g.uses || 0, k = E.upK(S, inst, (E.regionById(S, inst.region) || {}).key), kx = v => 1 + (v - 1) * k, gr = gt.grow;
+            let v = '';
+            if (gr.xm)
+                v = `倍率×${r2u(Math.pow(kx(gr.xm), E.growExp(u)))}`;
+            else if (gr.pm)
+                v = `対応力×${r2u(Math.pow(kx(gr.pm), E.growExp(u)))}`;
+            else if (gr.p)
+                v = `対応力+${Math.round(gr.p * u * k)}`;
+            else if (gr.a)
+                v = `倍率+${r2u(gr.a * u * k)}`;
+            if (v && u > 0)
+                return { short: v.replace(/^(倍率|対応力)/, ''), full: `伸びた分 ${v}(${u}回)`, frac: null };
+        }
+        const lim = fx.find(t => t.limited);
         if (lim) {
             const left = inst.g.left == null ? lim.limited : inst.g.left;
             return { short: `残${left}`, full: `あと${left}回使える`, frac: left / lim.limited };
         }
-        const cd = d.fx.find(t => t.countdown);
+        const cd = fx.find(t => t.countdown);
         if (!cd)
             return '';
         if (inst.g.armed)
@@ -206,13 +242,13 @@
         const plain = /追加の効果はない/.test(d.effect);
         const rkey = o.region != null && S ? (E.regionById(S, o.region) || {}).key : d.region;
         const plainUp = plain || d.upKind === 'base3';
-        const base = Math.round((d.base || 0) + (o.bb || 0));
+        const base = Math.round((d.base || 0) * E.baseMulOf(id, lv) + (o.bb || 0) + (S && S.stats ? E.extraBase(S, id, lv) : 0));
         const lvTag = lv ? (d.upRepeat ? `<span class="c-lv rep">◇${lv}</span>` : '<span class="c-lv">◆</span>') : (d.evolve ? '<span class="c-lv evo">◇</span>' : '');
         return `<div class="card cat-${cat} r-${d.rarity} ${o.cls || ''}"${attrs}${o.style ? ` style="${o.style}"` : ''}>
     ${o.badge ? `<div class="c-badge">${o.badge}</div>` : ''}${statusHTML(o)}${/\bsel\b/.test(o.cls || '') ? '<div class="c-selmark">出す</div>' : ''}${o.stamp ? `<div class="c-seal">${sealHTML(o.stamp)}</div>` : ''}
     ${o.noArt ? '' : cardArt(d, o.region)}
     <div class="c-head"><div class="c-base"><b>${base}</b><span>基礎</span></div><div class="c-title"><span class="c-name">${esc(d.name)}</span>${lvTag}</div></div>
-    <div class="c-tags">${o.region != null ? regionChip(o.region) : ''}${cat === 'central' ? '<span class="t-c">中央</span>' : cat === 'local' ? '<span class="t-l">地方</span>' : ''}<span>${esc(d.target)}</span>${d.exclusive ? '<span>専用</span>' : ''}</div>
+    <div class="c-tags">${o.region != null ? regionChip(o.region) : ''}${cat === 'central' ? '<span class="t-c">中央</span>' : cat === 'local' ? '<span class="t-l">地方</span>' : ''}<span>${esc(d.target)}</span>${E.RESEARCH_CARDS.has(id) ? '<span class="t-res">研究</span>' : ''}${E.isCurse(id) && !E.cursePlayable(id) ? '<span class="t-noplay">出せない</span>' : ''}${E.isSeed(id) ? '<span class="t-noplay">消えない</span>' : ''}${E.isCx(id) ? '<span class="t-noplay">禍根を呼ぶ</span>' : ''}${d.alignment === '抑圧' ? '<span class="t-sup">抑圧</span>' : ''}${E.INFO_CARDS.has(id) ? '<span class="t-info">情報</span>' : ''}${d.exclusive ? '<span>専用</span>' : ''}</div>
     <div class="c-eff ${lv ? 'up' : ''}">${esc(effectAt(id, lv))}${o.stamp && E.STAMP[o.stamp] ? `<div class="c-stampline">${esc(E.STAMP[o.stamp].name)}:${esc(E.STAMP[o.stamp].effect)}</div>` : ''}</div>
     <div class="c-rar">${E.RARITY_NAME[d.rarity]}</div>
     ${o.foot || ''}
@@ -263,9 +299,32 @@
         return `<div class="graph"><svg viewBox="0 0 100 100" preserveAspectRatio="none">${edges}${labels}</svg>${nodes}</div>
     <div class="g-legend"><span><i class="lg strong"></i>${E.LINK_AT}以上(協力関係)</span><span><i class="lg mid"></i>0〜${E.LINK_AT - 1}</span><span><i class="lg bad"></i>マイナス</span></div>`;
     }
+    function renderRelTable() {
+        const rs = S.regions.filter(r => !r.dead);
+        const selRegs = new Set((ui.sel || []).map(u => { const c = E.cardByUid(S, u); return c ? c.region : null; }));
+        const head = rs.map(r => `<th style="--rc:${rcol(r.id)}" class="${selRegs.has(r.id) ? 'sel' : ''}"><span>${esc(r.name)}</span></th>`).join('');
+        const rows = rs.map((a, i) => {
+            const cells = rs.map((b, j) => {
+                if (i === j)
+                    return '<td class="self"></td>';
+                const v = E.getRel(S, a.id, b.id);
+                const cls = v >= E.LINK_AT ? 'strong' : v < 0 ? 'bad' : 'mid';
+                const k = Math.min(1, Math.abs(v) / 12);
+                const sel = selRegs.has(a.id) && selRegs.has(b.id) ? ' sel' : '';
+                return `<td class="rc ${cls}${sel}" style="--k:${k.toFixed(2)}" title="${esc(a.name)}と${esc(b.name)}:${v}${v >= E.LINK_AT ? '(協力関係)' : ''}">${v > 0 ? '+' + v : v}</td>`;
+            }).join('');
+            const hp = Array.from({ length: a.max }, (_, q) => `<i class="${q < a.hp ? 'on' : ''}"></i>`).join('');
+            return `<tr><th class="rh ${selRegs.has(a.id) ? 'sel' : ''}" style="--rc:${rcol(a.id)}"><span class="rn">${esc(a.name)}${a.home ? '<em>故</em>' : ''}</span><span class="rhp">${hp}</span><span class="rtr">信${a.trust}</span></th>${cells}</tr>`;
+        }).join('');
+        const dead = S.regions.filter(r => r.dead).map(r => esc(r.name)).join('・');
+        return `<table class="reltab"><thead><tr><th></th>${head}</tr></thead><tbody>${rows}</tbody></table>
+    ${dead ? `<div class="dim">壊滅:${dead}</div>` : ''}
+    <div class="g-legend"><span><i class="lg strong"></i>${E.LINK_AT}以上は協力関係</span><span><i class="lg bad"></i>マイナス</span><span>選んだカードの地方は金色</span></div>`;
+    }
     function renderSide() {
         const fs = S.facilities.length ? S.facilities.map(f => `<li><b>${esc(E.FAC[f.id].name)}</b><span>${esc(E.FAC[f.id].effect)}</span></li>`).join('') : '<li class="none">まだない</li>';
-        return `<div class="panel"><h2>地方の関係 <span class="dim">協力関係 ${E.linksCount(S)}</span></h2>${renderGraph()}</div>
+        const view = ui.relView || 'table';
+        return `<div class="panel"><h2>地方の関係 <span class="dim">協力関係 ${E.linksCount(S)} <button class="relsw" data-act="relview">${view === 'table' ? '図で見る' : '表で見る'}</button></span></h2>${view === 'table' ? renderRelTable() : renderGraph()}</div>
     <div class="panel"><h2>施設 <span class="dim">${S.facilities.length}/${S.facSlots}</span></h2><ul class="abilities">${fs}</ul></div>`;
     }
     function modal(html, cls) {
@@ -335,6 +394,13 @@
         if (l && l.value.trim())
             ui.names.leader = l.value.trim().slice(0, 16);
     }
+    function charDetailHTML(id) {
+        const c = CHAR[id], p = E.charProfile(id);
+        const it = p.twins ? [['始まり', '二人の人物の性質を合わせ持つ。どの二人かは就任するまで分からない']]
+            : [['最初の制度', p.draft ? `${p.draft}枚を選ぶ` : '前の時間から1枚を持ち越す'], ['集権度', p.C], ['議会資金', p.funds], ['地方の信頼', p.trust + (p.home ? '(故郷は9)' : '')]];
+        return `<div class="ch-detail"><div class="cd-name">${esc(c.name)}</div><div class="cd-flavor">${esc(E.FLAVOR[id])}</div>
+    <dl class="cd-stats">${it.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('')}</dl></div>`;
+    }
     function renderChars() {
         const list = E.D.characters.map(c => {
             if (!E.charUnlocked(meta, c.id)) {
@@ -353,10 +419,73 @@
         $('#app').innerHTML = `<div class="screen wide">
     <div class="step">二 / 三</div><h2 class="s-title">${esc(ui.names.leader)}は、どんな人物か</h2>
     ${html}
+    ${charDetailHTML(ui.pick)}
     <div class="nav"><button data-act="toname">戻る</button><button class="primary" data-act="start">${esc(CHAR[ui.pick].name)}として就任する</button></div>
   </div><div id="modal" class="modal"></div>`;
     }
+    function pixCrack(w, h, n) {
+        const P = 4, rects = [];
+        for (let k = 0; k < n; k++) {
+            let x = Math.floor(w / P / 2 + (Math.random() - 0.5) * w / P / 3), y = 0;
+            const dir = Math.random() < 0.5 ? -1 : 1;
+            while (y < h / P) {
+                rects.push(`<rect x="${x * P}" y="${y * P}" width="${P}" height="${P}"/>`);
+                const r = Math.random();
+                if (r < 0.45)
+                    y++;
+                else if (r < 0.8)
+                    x += dir;
+                else {
+                    x -= dir;
+                    y++;
+                }
+                if (Math.random() < 0.04) {
+                    let bx = x, by = y;
+                    for (let q = 0; q < 6; q++) {
+                        bx -= dir;
+                        by += Math.random() < 0.6 ? 1 : 0;
+                        rects.push(`<rect x="${bx * P}" y="${by * P}" width="${P}" height="${P}"/>`);
+                    }
+                }
+            }
+        }
+        return `<svg class="cx-crack" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" shape-rendering="crispEdges">${rects.join('')}</svg>`;
+    }
+    function showCx() {
+        if (!S || !S.pendingCx || !document.body || !document.body.appendChild || (document.getElementById && document.getElementById('cxov')))
+            return;
+        const pc = S.pendingCx;
+        S.pendingCx = null;
+        const big = pc.first && !pc.up;
+        const el = document.createElement('div');
+        el.id = 'cxov';
+        el.className = 'cxov' + (big ? ' first' : '');
+        const lines = big ? ["L'encre est déjà sèche.", 'Derrière vous, plus de pont.']
+            : pc.up ? ['Un peu plus loin, un peu plus bas.'] : ["On finit par s'habituer à tout."];
+        const tCard = big ? 2.6 : 0.9, tSub = tCard + 0.8;
+        const curses = pc.curses.map((id, i) => `<div class="cx-curse" style="animation-delay:${tSub + 0.3 + i * 0.4}s">${cardHTML(id)}</div>`).join('');
+        el.innerHTML = `<div class="cx-dither"></div><div class="cx-band top"></div><div class="cx-band bot"></div>
+    <div class="cx-core">${pixCrack(560, 520, big ? 3 : 1)}
+      <div class="cx-kicker">CATASTROPHIQUE</div>
+      ${lines.map((t, i) => `<div class="cx-line" style="animation-delay:${0.35 + i * 1.1}s">${esc(t)}</div>`).join('')}
+      <div class="cx-row">
+        <div class="cx-card" style="animation-delay:${tCard}s">${cardHTML(pc.id, { lv: pc.up ? 1 : 0 })}</div>
+        <div class="cx-curses"><div class="cx-sub" style="animation-delay:${tSub}s">Quelque chose vous a suivi.</div>${curses}</div>
+      </div>
+      <div class="cx-close" style="animation-delay:${tSub + 1.2}s">▶ continuer</div>
+    </div><div class="cx-scan"></div>`;
+        const t0 = Date.now();
+        el.onclick = () => { if (Date.now() - t0 < (tSub + 0.6) * 1000)
+            return; el.className += ' out'; setTimeout(() => el.remove(), 420); };
+        document.body.appendChild(el);
+        try {
+            if (BGM && BGM.duck)
+                BGM.duck(2.5);
+        }
+        catch (e) { }
+    }
     function render() {
+        setTimeout(showCx, 30);
         try {
             bgmUpdate();
         }
@@ -455,8 +584,15 @@
         const shownTotal = A ? A.before : fx.tally ? fx.tally.from : R.total;
         const pctFrom = Math.min(100, shownTotal / R.req * 100);
         const mp = E.maxPlay(S);
+        if (ui.lastMp != null && ui.lastMp !== mp && ui.lastMpRun === S) {
+            const was = ui.lastMp, note = E.maxPlayNote(S);
+            setTimeout(() => toast(`1手で出せる枚数が${was}枚から${mp}枚になった(${note})`, mp > was ? 'good' : 'bad'), 300);
+        }
+        ui.lastMp = mp;
+        ui.lastMpRun = S;
         const canAct = S.phase === 'round' && !R.done && !R.backerPending && !A;
         ui.sel = ui.sel.filter(u => S.hand.includes(u));
+        const selBad = ui.sel.some(u => !E.cursePlayable((E.cardByUid(S, u) || {}).id));
         const n = S.hand.length;
         const ov = n > 8 ? 42 : n > 6 ? 30 : n > 4 ? 18 : 6;
         let dealt = 0;
@@ -480,7 +616,7 @@
         if (last) {
             const cards = last.ids.map((id, i) => `<div class="tcard ${A ? 'fly' : ''}" id="tc-${last.uids[i]}" style="animation-delay:${i * 90}ms">${cardHTML(id, { lv: last.lvs[i], region: last.regions[i] })}</div>`).join('');
             const r = last.res;
-            table = `<div class="tcards">${cards || '<div class="table-empty">何も出さなかった</div>'}</div>
+            table = `<div class="tcards" id="tcards-row">${cards || '<div class="table-empty">何も出さなかった</div>'}</div>
       <div class="tally" id="tally"><span class="t-p" id="t-p">${A ? 0 : fmt(r.P)}</span><span class="t-x">×</span><span class="t-m" id="t-m">${A ? 1 : r.M}</span><span class="t-eq">=</span><span class="t-s" id="t-s">${A ? '' : fmt(r.score)}</span></div>
       <div class="tdetail" id="tdetail">${A ? '' : stepsSummary(r.steps)}</div>${A ? '<div class="combo" id="combo"></div>' : ''}`;
         }
@@ -495,15 +631,14 @@
   ${banner}
   <div class="table" id="table">${table}</div>
   <div class="actions">
-    <div class="pv">${pv && ui.sel.length <= mp ? `見込み <b>${fmt(pv.P)}</b> × <b>${pv.M}</b> = <b class="big">${fmt(pv.score)}</b>` : `<span class="dim">出すのは${mp}枚まで、引き直しは${E.maxDiscard(S)}枚まで。選んだ順に発動する</span>`}</div>
-    <button class="primary" data-act="exec" ${canAct && ui.sel.length <= mp ? '' : 'disabled'}>${ui.sel.length > mp ? `出せるのは${mp}枚まで` : ui.sel.length ? `${ui.sel.length}枚を出す` : '何もせず手番を終える'}</button>
+    <div class="pv">${pv && ui.sel.length <= mp ? `見込み <b>${fmt(pv.P)}</b> × <b>${pv.M}</b> = <b class="big">${fmt(pv.score)}</b>` : `<span class="dim" title="${esc(E.maxPlayNote(S))}">出すのは${mp}枚まで(${esc(E.maxPlayNote(S))})、引き直しは${E.maxDiscard(S)}枚まで。選んだ順に発動する</span>`}</div>
+    <button class="primary" data-act="exec" ${canAct && ui.sel.length <= mp && !selBad ? '' : 'disabled'}>${selBad ? '出せないカードが混ざっている' : ui.sel.length > mp ? `出せるのは${mp}枚まで` : ui.sel.length ? `${ui.sel.length}枚を出す` : '何もせず手番を終える'}</button>
     <button data-act="discard" ${canAct && R.discardsLeft > 0 && ui.sel.length && ui.sel.length <= E.maxDiscard(S) ? '' : 'disabled'}>${ui.sel.length > E.maxDiscard(S) ? `引き直せるのは${E.maxDiscard(S)}枚まで` : '引き直す'}</button>
-    ${S.charId === 'puppet' ? '' : `<button class="decl" data-act="declare" ${E.canDeclare(S) && canAct ? '' : 'disabled'}>緊急事態宣言を発令する</button>`}
-    ${S.charId === 'twins' && E.owned(S, 'swap') ? '<button data-act="swap">片割れを入れ替える</button>' : ''}
+    ${S.charId === 'puppet' ? '' : `<button class="decl" data-act="declare" ${E.canDeclare(S) && canAct ? '' : 'disabled'}>${R.decl ? `宣言中 倍率×${r2u(1 + R.declBonus)}` : `緊急事態宣言 倍率×${r2u(1 + E.declBonusOf(S))}`}</button>`}
   </div>
   <div class="hand-fan ${A ? 'busy' : ''} ${ui.sel.length ? 'has-sel' : ''}">${hand || '<div class="empty">手札がない</div>'}</div>
   <div class="deckinfo">山札 ${S.drawPile.length}</div>
-  ${fx.stamp ? '<div class="stamp"><span>緊急事態宣言</span></div>' : ''}`;
+  ${fx.stamp ? `<div class="emerg"><div class="em-flash"></div><div class="em-band top"></div><div class="em-band bot"></div><div class="em-core"><div class="em-kicker">STATE OF EMERGENCY</div><div class="em-title">緊急事態宣言</div><div class="em-sub">このラウンドの倍率 ×${r2u(1 + (R.declBonus || 0))}</div></div><div class="em-scan"></div></div>` : ''}`;
     }
     function pips(left, total) { return Array.from({ length: Math.max(total, left) }, (_, i) => `<i class="${i < left ? 'on' : ''}"></i>`).join(''); }
     function stepText(st) {
@@ -557,6 +692,26 @@
             const st = A.steps[k];
             const dur = A.fast ? 35 : Math.max(55, 440 * Math.pow(0.86, k));
             let el = st.uid != null ? gid('tc-' + st.uid) : st.fuid != null ? gid('fac-' + st.fuid) : gid('tally');
+            const pm = Math.max(1, (st.P || 0) * (st.M || 1)), req = Math.max(10, S.R ? S.R.req : 1000);
+            const heat = Math.max(0, Math.min(2, Math.log10(pm) / Math.log10(req)));
+            const grow = pm / Math.max(1, A.lastPM || 1);
+            A.lastPM = pm;
+            const amp = Math.min(3, 0.35 + heat * 1.1 + (grow >= 2 ? Math.min(1, Math.log2(grow) * 0.25) : 0));
+            if (el && el.style) {
+                el.style.setProperty('--amp', amp.toFixed(2));
+                el.style.setProperty('--dir', k % 2 ? '1' : '-1');
+            }
+            if (tbl && tbl.style)
+                tbl.style.setProperty('--heat', heat.toFixed(2));
+            const tc = gid('tcards-row');
+            if (tc && tc.classList && heat >= 0.9) {
+                tc.style.setProperty('--amp', amp.toFixed(2));
+                flash(tc, 'quake');
+            }
+            if (st.uid != null && heat >= 0.7 && !A.fast)
+                burst(el, Math.round(4 + heat * 8 + (grow >= 3 ? 6 : 0)));
+            if (grow >= 3 && !A.fast)
+                shake(tbl, Math.min(3, Math.log2(grow) * 0.6));
             flash(el, st.retrig ? 'fire re' : 'fire');
             const txt = (st.retrig ? 'もう一度 ' : '') + (st.kind === 'glob' || st.kind === 'rel' || st.kind === 'pre' ? st.name + ' ' : '') + stepText(st);
             const kind = st.x && st.x !== 1 ? 'mul' : st.a ? 'add' : st.kind === 'off' ? 'off' : 'pow';
@@ -576,6 +731,11 @@
                 pEl.textContent = fmt(st.P);
                 flash(pEl, 'bump');
             }
+            if (sEl)
+                sEl.textContent = '';
+            const tl = gid('tally');
+            if (tl && tl.style)
+                tl.style.setProperty('--heat', heat.toFixed(2));
             if (mEl) {
                 mEl.textContent = st.M;
                 if (st.a || (st.x && st.x !== 1))
@@ -595,10 +755,15 @@
             setTimeout(step, dur);
         };
         const finish = () => {
+            const fh = Math.max(0, Math.min(2, Math.log10(Math.max(1, A.res.score)) / Math.log10(Math.max(10, S.R ? S.R.req : 1000))));
+            if (sEl && sEl.style)
+                sEl.style.setProperty('--amp', (0.6 + fh).toFixed(2));
             if (sEl) {
                 sEl.textContent = fmt(A.res.score);
                 flash(sEl, 'slam');
-                burst(sEl, A.steps.length > 8 ? 30 : 16);
+                burst(sEl, Math.round(10 + fh * 20 + (A.steps.length > 8 ? 10 : 0)));
+                if (fh >= 1.2)
+                    shake(tbl, Math.min(3, fh * 1.5));
                 if (A.res.score >= (S.R ? S.R.req : 1e9))
                     screenFlash('gold');
             }
@@ -659,14 +824,16 @@
             nextTxt = '次は最終災害「長い冬」。三つの局面が続けて来る。';
         const reveal = P.reveal.map(t => `<p class="reveal">${esc(t)}</p>`).join('');
         const deal = ui.fxNow.shopDeal || ui.fxNow.cardDeal, fdeal = ui.fxNow.facDeal || ui.fxNow.shopDeal, sdeal = ui.fxNow.stampDeal || ui.fxNow.shopDeal;
-        if ((ui.fxNow.shopDeal || ui.fxNow.cardDeal) && S.shop.some(o => /[LX]/.test(CARD[o.id].rarity)))
+        if ((ui.fxNow.shopDeal || ui.fxNow.cardDeal) && S.shop.some(o => !o.sold && CARD[o.id].rarity === 'K'))
+            setTimeout(() => toast('議会の片隅に、封のされた黒い案が置かれている。', 'bad'), 700);
+        else if ((ui.fxNow.shopDeal || ui.fxNow.cardDeal) && S.shop.some(o => /[LX]/.test(CARD[o.id].rarity)))
             setTimeout(() => toast(S.shop.some(o => CARD[o.id].rarity === 'X') ? '議会に、伝説の案が届いている。' : '議会に、珍しい案が届いている。', 'unlock'), 400);
         const tab = ui.ptab || 'cards';
         const full = S.facilities.length >= S.facSlots;
         const pend = P.pendingStamp != null ? S.stampShop[P.pendingStamp] : null;
         let body = '';
         if (tab === 'cards') {
-            body = `<div class="sec-head"><span>提出された対策案</span><span class="sh-r"><span class="dim">持っているカードを承認すると、新しく増えずに強化される(1枚につき1回)</span><button data-act="reroll" ${S.funds >= P.rerollCost ? '' : 'disabled'}>差し替える ${P.rerollCost}</button></span></div>
+            body = `<div class="sec-head"><span>提出された対策案</span><span class="sh-r"><span class="dim">${S.shop.length}枚(${esc(E.offerNote(S))})。持っているカードを承認すると、新しく増えずに強化される</span><button data-act="reroll" ${S.funds >= P.rerollCost ? '' : 'disabled'}>差し替える ${P.rerollCost}</button></span></div>
       <div class="cards">${S.shop.map((o, i) => {
                 const t = E.mergeTarget(S, o.id);
                 return cardHTML(o.id, { cls: (o.sold ? 'sold ' : '') + (deal ? 'deal' : ''), style: deal ? `animation-delay:${i * 80}ms` : '', region: E.RG.findIndex(r => r.key === CARD[o.id].region),
@@ -687,7 +854,7 @@
         else {
             body = `<div class="sec-head"><span>手持ちの制度 ${S.deck.length}枚</span>${pend ? `<span class="pend">${esc(E.STAMP[pend.id].name)}を押すカードを選ぶ</span>` : `<span class="dim">廃止にかかる資金は、廃止するたびに上がっていく</span>`}</div>
       <div class="cards small">${S.deck.map(inst => cardHTML(inst.id, { lv: inst.lv, uid: pend ? inst.uid : null, iuid: inst.uid, region: inst.region, stamp: inst.stamp, bb: inst.g.bb, counter: counterText(inst), cls: pend ? 'stamp-target' : '', act: pend ? 'applystamp' : null,
-                foot: pend ? `<div class="c-foot seal-here">ここに${esc(E.STAMP[pend.id].name)}を押す</div>` : `<div class="c-btns"><button data-act="sell" data-uid="${inst.uid}" ${S.deck.length > 5 && S.funds >= E.sellValue(S, inst) ? '' : 'disabled'}>廃止する ${E.sellValue(S, inst)}</button></div>` })).join('')}</div>`;
+                foot: pend ? `<div class="c-foot seal-here">ここに${esc(E.STAMP[pend.id].name)}を押す</div>` : (E.isSeed(inst.id) ? `<div class="c-btns"><button disabled>消せない</button></div>` : `<div class="c-btns"><button data-act="sell" data-uid="${inst.uid}" ${E.sellable(S, inst) && S.funds >= E.sellValue(S, inst) ? '' : 'disabled'}>廃止する ${E.sellValue(S, inst)}</button></div>`) })).join('')}</div>`;
         }
         const tabs = [['cards', `対策案 ${S.shop.filter(o => !o.sold).length}`], ['fac', `施設 ${S.facilities.length}/${S.facSlots}`], ['stamp', P.stamped ? '調印 済' : '調印'], ['deck', `手持ち ${S.deck.length}`]]
             .map(([k, l]) => `<button class="ptab ${tab === k ? 'on' : ''}" data-act="ptab" data-k="${k}">${esc(l)}</button>`).join('');
@@ -704,26 +871,52 @@
     </div>
   </div>`;
     }
-    const SEAL_ICON = {
-        gold: '<path fill-rule="evenodd" d="M8 1.5a6.5 6.5 0 1 1 0 13a6.5 6.5 0 0 1 0-13zM6.3 6.3h3.4v3.4H6.3z"/>',
-        red: '<path d="M6.5 2h3v4.5H14v3H9.5V14h-3V9.5H2v-3h4.5z"/>',
-        blue: '<path d="M8 1.5l5 5h-3V9H6V6.5H3zM3 11h10v3H3z"/>',
-        foundation: '<path d="M2 11h12v3H2zM3 7h10v3H3zM4.5 3h7v3h-7z"/>',
-        iron: '<path d="M3.2 1.5L8 6.3l4.8-4.8 1.7 1.7L9.7 8l4.8 4.8-1.7 1.7L8 9.7l-4.8 4.8-1.7-1.7L6.3 8 1.5 3.2z"/>',
-        twin: '<path fill-rule="evenodd" d="M6 3a5 5 0 1 1 0 10A5 5 0 0 1 6 3zm0 2a3 3 0 1 0 0 6a3 3 0 0 0 0-6zM10 3a5 5 0 1 1 0 10a5 5 0 0 1 0-10zm0 2a3 3 0 1 0 0 6a3 3 0 0 0 0-6z"/>',
-        bond: '<path fill-rule="evenodd" d="M1.5 8a3.5 3.5 0 0 1 3.5-3.5h3v2H5a1.5 1.5 0 0 0 0 3h3v2H5A3.5 3.5 0 0 1 1.5 8zM8 4.5h3a3.5 3.5 0 0 1 0 7H8v-2h3a1.5 1.5 0 0 0 0-3H8zM5.5 7h5v2h-5z"/>',
-        people: '<path d="M8 1.5a3 3 0 1 1 0 6a3 3 0 0 1 0-6zM2.5 14.5c0-3.5 2.5-5.5 5.5-5.5s5.5 2 5.5 5.5z"/>',
-        far: '<path d="M1 8l4-4v2.5h6V4l4 4-4 4V9.5H5V12z"/>',
-        old: '<path d="M3 1.5h10v2l-3.5 4.5 3.5 4.5v2H3v-2l3.5-4.5L3 3.5zM5.5 3.5L8 6.5l2.5-3zM5 13h6l-3-3.5z"/>',
-        shadow: '<path fill-rule="evenodd" d="M2 2.5h7v11H2zM3.5 4v8h4V4zM10.5 6.5h2V4l3 4-3 4V9.5h-2z"/>',
-        glass: '<path fill-rule="evenodd" d="M8 1l5.5 7L8 15 2.5 8zM8 4l-1.2 3 2.2 1.5-1.5 3.5L10 8.3 7.9 7z"/>',
-        lucky: '<path d="M8 1l1.9 4.6 4.9.4-3.7 3.2 1.1 4.8L8 11.5 3.8 14l1.1-4.8L1.2 6l4.9-.4z"/>',
+    const SEAL_PIX = {
+        gold: ['...#####...', '.#########.', '.#########.', '###########', '####...####', '####...####', '####...####', '###########', '.#########.', '.#########.', '...#####...'],
+        red: ['....###....', '....###....', '....###....', '....###....', '###########', '###########', '###########', '....###....', '....###....', '....###....', '....###....'],
+        blue: ['.....#.....', '....###....', '...#####...', '..#######..', '.#########.', '....###....', '....###....', '....###....', '...........', '###########', '###########'],
+        foundation: ['...........', '..#######..', '..#######..', '...........', '.####.####.', '.####.####.', '...........', '#####.#####', '#####.#####', '...........', '###########'],
+        iron: ['...........', '##########.', '###########', '.#########.', '...#####...', '....###....', '....###....', '...#####...', '..#######..', '..#######..', '...........'],
+        twin: ['...........', '...........', '..#.....#..', '.###...###.', '#####.#####', '#####.#####', '.###...###.', '..#.....#..', '...........', '...........', '...........'],
+        bond: ['...........', '...........', '###.....###', '###.....###', '###########', '###########', '###.....###', '###.....###', '...........', '...........', '...........'],
+        people: ['....###....', '...#####...', '...#####...', '...#####...', '....###....', '...........', '..#######..', '.#########.', '###########', '###########', '###########'],
+        far: ['...........', '...........', '..#.....#..', '.##.....##.', '###########', '###########', '.##.....##.', '..#.....#..', '...........', '...........', '...........'],
+        old: ['###########', '.#########.', '..#.....#..', '...#...#...', '....#.#....', '.....#.....', '....#.#....', '...#.#.#...', '..#.###.#..', '.#########.', '###########'],
+        shadow: ['...#####...', '.#####.....', '.####......', '####.......', '####.......', '####.......', '####.......', '####.......', '.####......', '.#####.....', '...#####...'],
+        glass: ['...........', '..#######..', '.##.###.##.', '###########', '.#.#####.#.', '..#.###.#..', '...#.#.#...', '....###....', '.....#.....', '...........', '...........'],
+        lucky: ['.###...###.', '#####.#####', '#####.#####', '.#########.', '....###....', '.#########.', '#####.#####', '#####.#####', '.###.#.###.', '.....#.....', '....#......']
     };
+    function pixPath(rows, ox, oy) {
+        let d = '';
+        rows.forEach((r, y) => { let x = 0; while (x < r.length) {
+            if (r[x] !== '#') {
+                x++;
+                continue;
+            }
+            let e = x;
+            while (e < r.length && r[e] === '#')
+                e++;
+            d += `M${x + ox} ${y + oy}h${e - x}v1h-${e - x}z`;
+            x = e;
+        } });
+        return d;
+    }
+    const SEAL_FRAME = (() => { const rows = []; for (let y = 0; y < 15; y++) {
+        let r = '';
+        for (let x = 0; x < 15; x++) {
+            const cx = Math.min(x, 14 - x), cy = Math.min(y, 14 - y);
+            r += cx + cy >= 2 ? '#' : '.';
+        }
+        rows.push(r);
+    } return rows; })();
+    const SEAL_FILL = SEAL_FRAME.map((r, y) => r.split('').map((ch, x) => { const cx = Math.min(x, 14 - x), cy = Math.min(y, 14 - y); return ch === '#' && cx >= 1 && cy >= 1 && cx + cy >= 3 ? '#' : '.'; }).join(''));
+    const SEAL_HI = SEAL_FILL.map((r, y) => y === 1 || y === 2 ? r : '.'.repeat(15));
     function sealHTML(id, big) {
         const t = E.STAMP[id];
         if (!t)
             return '';
-        const ic = SEAL_ICON[id] ? `<svg viewBox="0 0 16 16" aria-hidden="true">${SEAL_ICON[id]}</svg>` : esc(t.name.charAt(0));
+        const pix = SEAL_PIX[id];
+        const ic = pix ? `<svg viewBox="0 0 15 15" shape-rendering="crispEdges" aria-hidden="true"><path class="sf" d="${pixPath(SEAL_FRAME, 0, 0)}"/><path class="sb" d="${pixPath(SEAL_FILL, 0, 0)}"/><path class="sh" d="${pixPath(SEAL_HI, 0, 0)}"/><path class="si" d="${pixPath(pix, 2, 2)}"/></svg>` : esc(t.name.charAt(0));
         return `<span class="seal seal-${id} ${big ? 'big' : ''}" title="${esc(t.name + ':' + t.effect)}">${ic}</span>`;
     }
     function zukanList() {
@@ -746,7 +939,7 @@
         return `<h3>カード図鑑 <span class="dim" id="zcount">出会った制度 ${L.seen} / ${L.n}枚</span></h3>
     <div class="zfilter">
       <select data-act="zf" data-k="region">${opt([['', 'すべての地方']].concat(E.RG.map(r => [r.key, r.name])), f.region)}</select>
-      <select data-act="zf" data-k="rarity">${opt([['', 'すべてのレア'], ['C', 'コモン'], ['U', 'アンコモン'], ['R', 'レア'], ['L', 'エピック'], ['X', 'レジェンド']], f.rarity)}</select>
+      <select data-act="zf" data-k="rarity">${opt([['', 'すべてのレア'], ['C', 'コモン'], ['U', 'アンコモン'], ['R', 'レア'], ['L', 'エピック'], ['X', 'レジェンド'], ['K', 'カタストロフィック'], ['D', '禍根']], f.rarity)}</select>
       <input data-act="zq" placeholder="名前や効果で探す" value="${esc(f.q)}">
     </div>
     <div class="zgrid" id="zgrid">${L.html}</div>
@@ -847,7 +1040,7 @@
         return `<svg class="rv-chart" viewBox="0 0 ${W} ${Ht}" preserveAspectRatio="none">
     <line x1="${pad}" x2="${W - pad}" y1="${Ht - pad}" y2="${Ht - pad}" class="axis"/>${eras}${bars}
     <path d="${line('C')}" class="lc"/><path d="${line('U')}" class="lu"/></svg>
-    <div class="rv-legend"><span class="k c">集権度</span><span class="k u">不穏度</span><span class="k b">乗り切った手の余裕</span><span class="k n">届かなかった</span></div>`;
+    <div class="rv-legend"><span class="k c">集権度</span><span class="k u">街のざわめき</span><span class="k b">乗り切った手の余裕</span><span class="k n">届かなかった</span></div>`;
     }
     function renderReview() {
         if (document.body)
@@ -891,17 +1084,125 @@
         const cards = S.deck.map(inst => cardHTML(inst.id, { lv: inst.lv, region: inst.region, stamp: inst.stamp, bb: inst.g.bb, held: inst.g.held, counter: counterText(inst) })).join('');
         modal(`<h3>手持ちの制度 ${S.deck.length}枚</h3><div class="cards small">${cards}</div><div class="m-btns"><button data-act="close">閉じる</button></div>`, 'wide');
     }
-    const HELP = `<h3>遊び方</h3><div class="help">
-  <p>一つの時代は通常ラウンド2回とボス1回。ラウンドごとに災害が来るので、必要対策値まで対策値を積めば乗り切り。届かなければ地方が傷つき、地方の半数が壊滅すると国が終わる。</p>
-  <p>手札(画面下に扇形に並ぶ。カーソルを当てると大きく見える)からカードを選んで「出す」。対策値は 対応力 × 倍率。どのカードにも丸印の基礎対応力があり、効果欄の条件が揃うとそこに対応力や倍率が上乗せされる。出したカードは選んだ順に一枚ずつ発動し、対応力と倍率が積み上がっていく(発動中にクリックすると早送り)。1ラウンドの手番は4回、引き直しは3回。1手に出せる枚数は集権度で増える。</p>
-  <p>カードはそれぞれ出身の地方を持つ。地方には性格と特性があり、地図の地方にカーソルを当てると分かる。左の図は地方どうしの関係値で、関係の良い地方のカードを一緒に出すと倍率が上がり、悪いと下がる。同じ地方のカード同士も少し上がる。関係値5以上の組の数が「協力関係」。関係値に上限はない。二地方が近づくと、ほかの地方は面白く思わず関係が冷える。関係は放っておくと、離れているほど強く元の距離感へ戻る。山札が尽きたら捨て札を切り直して戻す。</p>
-  <p>議会では施設を建てられる。施設は持っているだけで働き、カードが発動するたび、または手の終わりに効果を足す。持てる数は最初3つで、用地を広げると増える。</p>
-  <p>「中央」のカードは集権度が高いほど、「地方」のカードは地方の信頼が高いほど強い。</p>
-  <p>緊急事態宣言は、そのラウンドの倍率を大きく上げる。</p>
-  <p>ラウンドのあとは議会。資金でカードを承認する。持っているカードをもう一度承認すると、そのカードが強化される。権限を地方に返すこともできる。ボスを越えると、能力かエピックのカードを一つ得る。</p>
-  <p>第8時代のボスは最終災害「長い冬」。越えれば本編クリアで、その先はエンドレス。</p>
-  <p>進行は自動で保存され、タイトルの「つづきから」で再開できる。</p></div>`;
-    function showHelp() { modal(HELP + '<div class="m-btns"><button data-act="close">閉じる</button></div>', 'wide'); }
+    const mk = n => `<i class="mk">${n}</i>`;
+    function annotatedCard(id, o, marks) {
+        let h = cardHTML(id, o);
+        marks.forEach(([sel, n]) => { const i = h.indexOf(sel); if (i >= 0)
+            h = h.slice(0, i + sel.length) + mk(n) + h.slice(i + sel.length); });
+        h = h.replace(/(<span class="c-reg[^>]*>[^<]*)/, '$1' + mk(3));
+        return h;
+    }
+    function exampleCard(id, o) { return `<div class="rb-card">${cardHTML(id, Object.assign({ region: E.RG.findIndex(r => r.key === CARD[id].region) }, o || {}))}</div>`; }
+    function rbFig(inner, cap) { return `<figure class="rb-fig">${inner}${cap ? `<figcaption>${cap}</figcaption>` : ''}</figure>`; }
+    const rbPips = (n, on) => Array.from({ length: n }, (_, i) => `<i class="${i < on ? 'on' : ''}"></i>`).join('');
+    const HELP_PAGES = [
+        ['はじめに', () => `
+    <p>あなたは小さな国の指導者になる。国には六つの地方があり、災害が次々に来る。カードで対策を積み上げて災害を乗り切り、国を保つ。</p>
+    ${rbFig(`<div class="rb-flow">${['通常ラウンド', '議会', '通常ラウンド', '議会', 'ボス', '議会'].map((t, i) => `<span class="${t === 'ボス' ? 'boss' : t === '議会' ? 'parl' : ''}">${t}</span>${i < 5 ? '<b>→</b>' : ''}`).join('')}</div>`, '一つの時代の流れ。これを第8時代まで繰り返す')}
+    <p>一つの時代は、通常のラウンドが2回とボスのラウンドが1回。ラウンドのあとには議会があり、資金でカードを増やしたり強くしたりできる。第8時代のボスは最終災害「長い冬」。越えれば本編クリアで、その先はエンドレスが続く。</p>
+    <h4>始め方</h4>
+    <p>国と指導者の名前、難易度を決め、人物を選ぶ。人物ごとに、最初に選ぶ制度の枚数や議会資金、集権度、1手で出せる枚数が違う(選ぶ画面に出る)。最後に、最初の制度(カード)を選んで始める。</p>
+    <p>進行は自動で保存され、タイトルの「つづきから」で再開できる。</p>`],
+        ['ラウンド', () => `
+    ${rbFig(`<div class="rb-dis"><div class="rb-dn">大規模停電 <span>人災</span></div><div class="rb-bar"><div style="width:38%"></div></div><div class="rb-dl"><span>対策値 <b>380</b> / 980 ${mk(1)}</span><span>手番 ●●○○ ${mk(2)} 引き直し ●●● ${mk(3)}</span></div></div>`, '①対策値と必要対策値 ②残りの手番 ③残りの引き直し')}
+    <p>ラウンドの始めに災害が来て、必要対策値が決まる。手札からカードを選んで「出す」と、そのカードの対策値が積み上がる。必要対策値まで積めば乗り切り。手番(1ラウンドに4回)を使い切っても届かなければ失敗で、地方が傷つく。</p>
+    <p>手札は8枚。カードは選んだ順に番号が付き、その順に発動する。1手に出せる枚数は基本4枚で、集権度30ごとに1枚増える(集権度が下がれば減る)。いまの枚数と内訳は、出すボタンの横に出る。</p>
+    <p>引き直しは、選んだカードを捨てて同じ枚数を引く(1ラウンドに3回)。何も選ばずに出すと、その手番は何もせずに終わる。山札が尽きたら、捨て札を切り直して山札に戻す。</p>
+    <p>災害には型がある(自然・人災・社会)。同じ型のカードが、その災害で働くことが多い。</p>`],
+        ['カードの見方', () => `
+    ${rbFig(`<div class="rb-card anno">${annotatedCard('survivor_log', { region: E.RG.findIndex(r => r.key === 'hokurei'), lv: 1, stamp: 'red', counter: { short: '1/2', full: '乗り切り 1/2', frac: 0.5 } }, [['<div class="c-base">', 1], ['<span class="c-name">', 2], ['<span class="t-l">', 4], ['<div class="c-rar">', 7], ['<div class="c-seal">', 8], ['<div class="c-status">', 9]]).replace('<div class="c-eff', `<i class="mk mk-row">6</i><div class="c-eff`).replace('<span>全般</span>', `<span>全般${mk(5)}</span>`)}</div>
+      <ol class="rb-legend">
+        <li>基礎。何の条件もなくても出す対応力</li>
+        <li>名前と強化の印。◆は強化済み、◇は重ねて強化しているカード(数字は回数)か、強化すると別のカードに化けるカード</li>
+        <li>出身の地方。地方ごとに得意なことがある</li>
+        <li>中央か地方か。中央のカードは集権度が高いほど、地方のカードはその地方の信頼が高いほど強い。どちらの印もないのは中立</li>
+        <li>型。全般はどの災害でも働く。型が書かれたカードは、その型の災害で働くことが多い</li>
+        <li>効果。条件がそろうと、基礎に対応力や倍率が上乗せされる</li>
+        <li>珍しさ。コモン・アンコモン・レア・エピック・レジェンド</li>
+        <li>調印の印(議会で押せる)</li>
+        <li>数えている途中の表示(数え札、使える残りの回数、伸びた分など)</li>
+      </ol>`, '')}
+    <p>カードにカーソルを当てると、大きく表示され、強化するとどうなるかも出る。</p>`],
+        ['計算の順序', () => `
+    <p>一回の手の対策値は、<b>対応力の合計 × 倍率</b>。手の始まりは対応力0、倍率1。選んだ順に一枚ずつ、次の順で数字が動く。</p>
+    <ol class="calc">
+      <li>そのカードの対応力を足す。対応力 = (基礎 + 効果の対応力) × 効果の「対応力×」× 中央・地方の補正</li>
+      <li>「倍率+」を、その時点の倍率に足す</li>
+      <li>「倍率×」を、その時点の倍率に掛ける</li>
+    </ol>
+    ${rbFig(`<div class="rb-two">
+      <table class="rb-calc"><tr><th>順</th><th>カード</th><th>対応力</th><th>倍率</th></tr>
+        <tr><td>1</td><td>基礎50</td><td>50</td><td>1</td></tr><tr><td>2</td><td>基礎10、倍率+2</td><td>60</td><td>1+2 = 3</td></tr><tr><td>3</td><td>基礎10、倍率×2</td><td>70</td><td>3×2 = 6</td></tr>
+        <tr class="tot"><td colspan="2">対策値</td><td colspan="2">70 × 6 = <b>420</b></td></tr></table>
+      <table class="rb-calc"><tr><th>順</th><th>カード</th><th>対応力</th><th>倍率</th></tr>
+        <tr><td>1</td><td>基礎50</td><td>50</td><td>1</td></tr><tr><td>2</td><td>基礎10、倍率×2</td><td>60</td><td>1×2 = 2</td></tr><tr><td>3</td><td>基礎10、倍率+2</td><td>70</td><td>2+2 = 4</td></tr>
+        <tr class="tot"><td colspan="2">対策値</td><td colspan="2">70 × 4 = <b>280</b></td></tr></table></div>`, '同じ3枚でも、倍率+を先に、倍率×を後に選ぶと大きくなる')}
+    <p>全部のカードが発動し終えたら、施設や「手の終わり」に働く効果、一緒に出したカードの地方どうしの関係(倍率に足す)、緊急事態宣言など全体に掛かる倍率の順に入る。出すボタンの上に、選んでいる手の見込みが出る。</p>`],
+        ['もう一度発動', () => `
+    <p>「もう一度発動」は、指したカードの効果を、その場でもう一度丸ごと起こす(基礎の対応力も、倍率+も倍率×も、もう一度入る)。</p>
+    ${rbFig(`<div class="rb-seq">${[['1', '北嶺のカード'], ['2', '倍率×のカード'], ['3', '再演'], ['4', '呼応(北嶺)']].map(([n, t]) => `<div><b>${n}</b>${t}</div>`).join('')}</div>
+      <ul class="rb-list"><li>再演(3番)は、直前に選んだ2番をもう一度発動する</li><li>呼応(4番)は、同じ地方のカードのうち最初に選んだ1番をもう一度発動する</li><li>合唱のような「先に選んだカードすべて」は、自分より小さい番号のカード全部</li><li>主権の分有のような「全部が発動し終えたあと」の効果は、最後にまとめて起きる</li></ul>`, '向き先は、選んだ順(カードの番号)で決まる')}
+    <p>もう一度発動したカードがもう一度発動の効果を持っていれば、その効果も起きる(重なりは3段まで)。1枚のカードがもう一度発動できるのは1手のうち${E.RETRIG_PER_CARD}回まで、1手全体では40回まで。</p>`],
+        ['地方と関係', () => `
+    ${rbFig(`<table class="reltab rb-rel"><thead><tr><th></th><th style="--rc:#4f6f8f"><span>北嶺</span></th><th style="--rc:#a0612a"><span>東浦</span></th><th style="--rc:#2f7f7a"><span>南湊</span></th></tr></thead><tbody>
+      <tr><th class="rh" style="--rc:#4f6f8f"><span class="rn">北嶺 ${mk(1)}</span><span class="rhp">${rbPips(6, 5)}</span><span class="rtr">信5</span></th><td class="self"></td><td class="rc bad" style="--k:.1">-1</td><td class="rc mid" style="--k:.2">+2 ${mk(2)}</td></tr>
+      <tr><th class="rh" style="--rc:#a0612a"><span class="rn">東浦</span><span class="rhp">${rbPips(6, 6)}</span><span class="rtr">信4</span></th><td class="rc bad" style="--k:.1">-1</td><td class="self"></td><td class="rc strong" style="--k:.6">+7 ${mk(3)}</td></tr>
+      <tr><th class="rh" style="--rc:#2f7f7a"><span class="rn">南湊</span><span class="rhp">${rbPips(6, 3)}</span><span class="rtr">信6</span></th><td class="rc mid" style="--k:.2">+2</td><td class="rc strong" style="--k:.6">+7</td><td class="self"></td></tr></tbody></table>`, '①地方の残りと信頼 ②関係値 ③5以上の組は協力関係')}
+    <p>地方には残り(体力)と信頼がある。地方のカードは、その地方の信頼が高いほど強い。被害を受けると残りが減り、信頼も下がる。残りが0になった地方は壊滅し、その地方のカードは対応力が半分になる。</p>
+    <p>表の数字は、地方どうしの関係値。関係の良い地方のカードを一緒に出すと倍率が上がり、悪いと下がる。同じ地方のカード同士も少し上がる。関係値5以上の組の数が「協力関係」で、協力関係の数で強くなるカードもある。二つの地方が近づくと、ほかの地方との関係が少し冷える。関係は放っておくと、元の距離感へ戻っていく。</p>
+    <p>地方ごとの得意なこと:</p>
+    <ul class="rb-list">${E.RG.map(r => `<li><span class="c-reg" style="--rc:${r.color}">${esc(r.name)}</span>「${esc(r.trait)}」${esc(r.traitText)}</li>`).join('')}</ul>
+    <p>表の右上の「図で見る」で、地方を円に並べた図にも切り替えられる。</p>`],
+        ['集権度', () => `
+    <p>画面上の集権度は、権限がどれだけ首都に集まっているかを表す(0〜100)。</p>
+    ${rbFig(`<table class="rb-calc rb-cf"><tr><th>集権度</th>${[0, 30, 50, 70, 100].map(c => `<td>${c}</td>`).join('')}</tr><tr><th>中央のカードの対応力</th>${[0, 30, 50, 70, 100].map(c => `<td>×${Math.round(0.7 * Math.pow(1.04, c) * 10) / 10}</td>`).join('')}</tr></table>`, '中央のカードは、集権度が100に近づくほど急激に強くなる。倍率+も伸びる')}
+    <p>集権度が高いほど、1手で出せる枚数(30ごとに+1)と、議会に並ぶ対策案の数(30と60で+1)も増える。</p>
+    <p>集権度は、災害が来るたびに上がる。すでに高いほど上がり方も速く、ボスでは大きく上がる。中央のカードを出したときや、ラウンドに失敗したときにも上がる。下げるには、議会で権限を地方に返す。</p>`],
+        ['被害と国の終わり', () => `
+    <p>ラウンドに失敗すると、届かなかった割合に応じて被害が出る。被害は、通常の災害では三つの地方に、ボスと長い冬ではすべての地方にばらけて入る。まったく届かなかったときは、通常の災害でその三つの地方が、ボスと長い冬ではすべての地方が壊滅しうる。</p>
+    ${rbFig(`<div class="rb-hp">${['北嶺', '東浦', '南湊', '西原', '川中', '山背'].map((n, i) => `<div class="${i === 2 || i === 4 ? 'dead' : ''}"><span>${n}</span><em>${i === 2 || i === 4 ? '壊滅' : rbPips(6, [6, 4, 0, 5, 0, 6][i])}</em></div>`).join('')}</div>`, '六つのうち三つが壊滅するか、残りの合計が3割を切ると、国は終わる')}
+    <p>地方の半数が壊滅するか、国じゅうの残りの合計が3割を切ると、国は終わる。壊滅した地方を立て直すカードもある。</p>`],
+        ['緊急事態宣言', () => `
+    <p>ラウンド中に一度だけ、緊急事態宣言を出せる。そのラウンドの倍率が大きく上がる。いまの倍率はボタンに出る。</p>
+    ${rbFig(`<button class="decl" tabindex="-1">緊急事態宣言 倍率×3.5</button>`, '')}`],
+        ['議会', () => `
+    <p>ラウンドのあとは議会。ラウンドの成果に応じて議会資金が入る。</p>
+    <ul class="rb-list">
+      <li><b>対策案</b>:並んだカードを資金で承認すると、持ち札に加わる。すでに持っているカードを承認すると、増えずにそのカードが強化される。差し替えると並びが変わる(差し替えるたびに費用が上がる)。枠を増やすこともできる</li>
+      <li><b>施設</b>:建てると、持っているだけで働く。カードが発動するたび、または手の終わりに効果を足す。持てる数は最初3つで、用地を広げると増える</li>
+      <li><b>調印</b>:1回の議会で1枚のカードに印を押せる。押し直すと前の印は消える</li>
+      <li><b>手持ち</b>:カードを廃止できる。廃止の費用は、廃止するたびに上がる</li>
+      <li><b>権限を地方に返す</b>:集権度を下げる</li>
+    </ul>
+    <p>議会には、各地から出来事が届くこともある。どちらかを選んで答える。</p>
+    <h4>強化</h4>
+    <p>強化すると、カードの数字が伸びる。数える回数は減り、使える回数は増え、条件は緩む。持っているだけで働くカードは、効き目そのものが変わる。もう一度発動するカードは、回数が増える。◇の付くカードは何度でも重ねて強化でき、強化するたびに元の基礎の分だけ基礎が積み上がる(効果の数字も少しずつ伸びる)。強化後の効果はカードにカーソルを当てると分かる。</p>`],
+        ['カードの仲間', () => `
+    <p>効果の中で「研究系のカード」「抑圧のカード」「情報のカード」などと書かれることがある。どのカードがそれに当たるかは、カードの印で分かる。</p>
+    ${rbFig(`<div class="rb-row">${exampleCard('research_lab')}${exampleCard('praetorian')}${exampleCard('state_broadcast')}</div>`, '左から 研究・抑圧・情報 の印')}
+    <p>抑圧のカードは中央のカードの一種。情報のカードは、停電のような災害で届かなくなることがある。</p>
+    <h4>数えるカード・使い切りのカード・伸びるカード</h4>
+    ${rbFig(`<div class="rb-row">${exampleCard('apprentice_fund', { counter: { short: '30/75', full: '支出 30/75', frac: 0.4 } })}${exampleCard('sealed_archive', { counter: { short: '残2', full: 'あと2回使える', frac: 1 } })}${exampleCard('kw_turbine', { counter: { short: '×1.84', full: '伸びた分 倍率×1.84', frac: null } })}</div>`, '左上の表示:数えている途中 / 使える残り / いままでに伸びた分')}
+    <p>「〜するたびに数え、○回ごとに〜」のカードは、数えている途中が左上に出る。持ち札にあれば、手札になくても数える。「使えるのは○回まで」のカードは、使い切ると消える。「伸びる」カードは、このランのあいだずっと伸び続ける。</p>`],
+        ['ボスと報酬', () => `
+    <p>ボスの災害には制約がつく(中央のカードが弱まる、資金が消えるなど)。制約はラウンドの始めに画面に出る。</p>
+    <p>ボスを越えると報酬を一つ選べる:調印つきのカード、エピック以上のカード、施設。</p>
+    <p>第8時代のボス「長い冬」は三段に分かれた最終災害。越えれば本編クリアで、その先はエンドレス。エンドレスでは必要対策値が桁ごと伸びていく。</p>`],
+        ['カタストロフィック', () => `
+    ${rbFig(`<div class="rb-row"><div class="rb-card">${cardHTML('cx_emergency')}</div><div class="rb-card">${cardHTML('curse_seed')}</div><div class="rb-card">${cardHTML('curse_blank')}</div></div>`, '左からカタストロフィック・禍の種・禍根')}
+    <p>権限が首都に集まりきった国や、長い時代を越えた国の議会には、黒いカードが並ぶことがある。それがカタストロフィック。どの地方にも属さず、ほかのカードとは桁の違う力を持つ。</p>
+    <p>そのかわり、手に入れるたびに、そして強化するたびに、禍根が1枚持ち札に紛れ込む。どの禍根が来るかはくじで、跡形もなく消えるだけの当たりもあれば、地方を失うものもある。権限が集まっているほど、重いものが来やすい。</p>
+    <p>最初の1枚で来る禍根は決まっていて、禍の種という。時代を終えるたびに、ときどき新しい禍根を呼ぶ。禍の種はどうやっても消えない。</p>
+    <p>禍根は強化できず、同じものが何枚でも重なる。議会で廃止できるが、ふつうのカードより一段高くつく。出せない禍根も、引き直しで手札から外せる。カタストロフィックは2種類まで持てる。</p>`],
+    ];
+    function helpHTML() {
+        const k = Math.max(0, Math.min(HELP_PAGES.length - 1, ui.helpPage || 0));
+        const [title, body] = HELP_PAGES[k];
+        return `<div class="rulebook"><nav class="rb-nav">${HELP_PAGES.map((p, i) => `<button class="${i === k ? 'on' : ''}" data-act="helppg" data-k="${i}"><span>${i + 1}</span>${esc(p[0])}</button>`).join('')}</nav>
+    <section class="rb-page help"><h3>${k + 1}. ${esc(title)}</h3>${body()}
+      <div class="rb-pager">${k > 0 ? `<button data-act="helppg" data-k="${k - 1}">← ${esc(HELP_PAGES[k - 1][0])}</button>` : '<span></span>'}${k < HELP_PAGES.length - 1 ? `<button class="primary" data-act="helppg" data-k="${k + 1}">${esc(HELP_PAGES[k + 1][0])} →</button>` : ''}</div></section></div>`;
+    }
+    function showHelp() { modal(helpHTML() + '<div class="m-btns"><button data-act="close">閉じる</button></div>', 'wide rbm'); }
     function showRecords() {
         const h = (meta.history || []).slice().reverse().map(r => `<tr><td>${esc(r.nation)}</td><td>${esc(r.leader)}</td><td>${esc(CHAR[r.char] ? CHAR[r.char].name : '')}</td><td>第${r.era}時代${r.endless ? '(エンドレス)' : ''}</td><td>${{ coup: 'クーデター', collapse: '壊滅', clear: '本編クリア', clearCritical: '冬の後の政変' }[r.end] || ''}</td><td class="num">${fmt(r.score)}</td></tr>`).join('');
         const nc = E.D.characters.filter(c => E.charUnlocked(meta, c.id)).length;
@@ -985,8 +1286,10 @@
         const d = S.R && S.R.d;
         if (d && (d.winter || (S.endless && d.boss)))
             return 'winter';
-        if (d && d.boss)
-            return 'boss';
+        if (d && d.boss) {
+            const k = d.type === '自然' ? 'boss2' : d.type === '社会' ? 'boss3' : 'boss';
+            return window.MUSIC && window.MUSIC[k] ? k : 'boss';
+        }
         return 'round';
     }
     function bgmUpdate() { if (meta.bgmOff)
@@ -1020,20 +1323,38 @@
     };
     const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
     const BGS = { pal: BG_PAL.title, t: 0, last: 0, speed: 1 };
+    const BGN = (() => { const P = []; let q = 1234567; for (let i = 0; i < 512; i++) {
+        q = (q * 16807) % 2147483647;
+        P.push(q / 2147483647 * 2 - 1);
+    } return P; })();
+    function vnoise(x, y) {
+        const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+        const h = (a, b) => BGN[((a * 73 + b * 151) % 512 + 512) % 512];
+        const sx = xf * xf * (3 - 2 * xf), sy = yf * yf * (3 - 2 * yf);
+        const a = h(xi, yi) + (h(xi + 1, yi) - h(xi, yi)) * sx, b = h(xi, yi + 1) + (h(xi + 1, yi + 1) - h(xi, yi + 1)) * sx;
+        return a + (b - a) * sy;
+    }
     function bgLoop(ts) {
         const cv = document.getElementById && document.getElementById('bgcv');
         if (!cv || !cv.getContext)
             return;
-        if (ts - BGS.last > 66) {
+        if (ts - BGS.last > 80) {
             BGS.last = ts;
-            BGS.t += 0.05 * BGS.speed;
+            BGS.t += 0.04 * BGS.speed;
             const W = cv.width, H = cv.height, g = BGS.ctx || (BGS.ctx = cv.getContext('2d')), img = BGS.img || (BGS.img = g.createImageData(W, H)), d = img.data, pal = BGS.pal, n = pal.length, t = BGS.t;
+            const ox = t * 1.6, oy = Math.sin(t * 0.13) * 3;
             for (let y = 0; y < H; y++)
                 for (let x = 0; x < W; x++) {
-                    const dx = (x - W / 2) / H, dy = (y - H / 2) / H, r = Math.sqrt(dx * dx + dy * dy), a = Math.atan2(dy, dx);
-                    let v = Math.sin(r * 9 - t * 1.3 + a * 3 + Math.sin(r * 4 + t * 0.7) * 2) * 0.5 + Math.sin(dx * 5 + t * 0.6) * 0.25 + Math.cos(dy * 6 - t * 0.4) * 0.25;
-                    v = (v + 1) / 2 * (n - 1) + (BAYER[(y & 3) * 4 + (x & 3)] / 16 - 0.5);
-                    const c = pal[Math.max(0, Math.min(n - 1, Math.round(v)))], i = (y * W + x) * 4;
+                    const u = (x + ox) / 22, w = (y + oy) / 22;
+                    let v = vnoise(u, w) * 0.65 + vnoise(u * 2.1 + 7, w * 2.1 - t * 0.05) * 0.3 + vnoise(u * 4.3, w * 4.3 + 3) * 0.12;
+                    v = (v + 1) / 2;
+                    const lv = v * 7, fr = lv - Math.floor(lv);
+                    let idx = Math.round(1 + v * (n - 2) + (BAYER[(y & 3) * 4 + (x & 3)] / 16 - 0.5) * 0.9);
+                    if (fr < 0.09)
+                        idx = Math.max(0, idx - 2);
+                    if ((x + Math.floor(ox)) % 32 === 0 && (y & 1) || (y % 24 === 0 && ((x + Math.floor(ox)) & 1)))
+                        idx = Math.max(0, idx - 1);
+                    const c = pal[Math.max(0, Math.min(n - 1, idx))], i = (y * W + x) * 4;
                     d[i] = c[0];
                     d[i + 1] = c[1];
                     d[i + 2] = c[2];
@@ -1041,7 +1362,7 @@
                 }
             g.putImageData(img, 0, 0);
         }
-        (window.requestAnimationFrame || (f => setTimeout(() => f(Date.now()), 66)))(bgLoop);
+        (window.requestAnimationFrame || (f => setTimeout(() => f(Date.now()), 80)))(bgLoop);
     }
     function setBgTheme(k) { BGS.pal = BG_PAL[k] || BG_PAL.neutral; BGS.speed = /riot|eruption|fire|asteroid/.test(k) ? 2.2 : /blackout|conspiracy/.test(k) ? 0.5 : 1; }
     function toast(text, kind) {
@@ -1134,6 +1455,12 @@
         }
     }
     function onClickInner(ev) {
+        if (ev.target && ev.target.id === 'modal' && ev.target.querySelector('[data-act="close"]')) {
+            closeModal();
+            if (ui.view === 'game')
+                render();
+            return;
+        }
         const t = ev.target.closest('[data-act]');
         if (!t)
             return;
@@ -1253,10 +1580,29 @@
                     return;
                 }
                 break;
+            case 'helppg':
+                ui.helpPage = +t.dataset.k;
+                showHelp();
+                {
+                    const b = document.querySelector('.rb-page');
+                    if (b)
+                        b.scrollTop = 0;
+                    const mb = document.querySelector('.modal-box');
+                    if (mb)
+                        mb.scrollTop = 0;
+                }
+                return;
             case 'close':
                 closeModal();
                 if (ui.view !== 'game')
                     return;
+                break;
+            case 'relview':
+                ui.relView = (ui.relView || 'table') === 'table' ? 'graph' : 'table';
+                try {
+                    localStorage.setItem('decentral-state-relview', ui.relView);
+                }
+                catch (e) { }
                 break;
             case 'deck':
                 ui.modal = 'deck';

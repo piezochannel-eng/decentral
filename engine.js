@@ -54,10 +54,129 @@
         { name: '長い冬 三 飢えた春', type: '社会', keys: ['暴動', '分離'] }
     ];
     const INFO_CARDS = new Set(['state_broadcast', 'expert_panel', 'local_press', 'peer_review', 'oracle', 'censorship', 'transparency']);
-    const RESEARCH_CARDS = new Set(['research_lab', 'expert_panel', 'weather_bureau', 'citizen_science', 'vaccine', 'literature_review', 'peer_review', 'lecture_notes', 'disaster_edu', 'chronicle', 'knowledge_share']);
-    const PRICE = { C: 3, U: 5, R: 7, L: 12, X: 20 };
+    const RESEARCH_CARDS = new Set(['rs_footnote', 'rs_index', 'rs_failed_exp', 'rs_joint', 'rs_citation', 'rs_replication', 'rs_symposium', 'rs_thesis', 'research_lab', 'expert_panel', 'weather_bureau', 'citizen_science', 'vaccine', 'literature_review', 'peer_review', 'lecture_notes', 'disaster_edu', 'chronicle', 'knowledge_share']);
+    const PRICE = { C: 3, U: 5, R: 7, L: 12, X: 20, K: 9, D: 1 };
     const RARITY_W = { C: 55, U: 30, R: 12, L: 3, X: 0 };
-    const RARITY_NAME = { C: 'コモン', U: 'アンコモン', R: 'レア', L: 'エピック', X: 'レジェンド' };
+    const RARITY_NAME = { C: 'コモン', U: 'アンコモン', R: 'レア', L: 'エピック', X: 'レジェンド', K: 'カタストロフィック', D: '禍根' };
+    const isCx = id => !!CARD[id] && CARD[id].rarity === 'K';
+    const isCurse = id => !!CARD[id] && CARD[id].rarity === 'D';
+    const isSeed = id => id === 'curse_seed';
+    const CX_MAX = 2;
+    function cxOpen(S) { return S.maxC >= 60 || (S.endless && S.era >= 12); }
+    function cursePlayable(id) { return !isCurse(id) || !!CARD[id].curse.play; }
+    function curseWeights(S) {
+        const Ce = Ceff(S), l = luckOf(S).l;
+        return { good: 5 * (1 + 0.05 * l), light: 45 * (1 + 0.03 * l), mid: 35, heavy: 15 * (1 + Math.max(0, Ce - 60) / 20) };
+    }
+    function addCurse(S, why) {
+        let id;
+        if (!S.flags.seedGiven) {
+            id = 'curse_seed';
+            S.flags.seedGiven = true;
+        }
+        else {
+            const w = curseWeights(S);
+            const tot = Object.values(w).reduce((a, b) => a + b, 0);
+            let t = Math.random() * tot, sev = 'heavy';
+            for (const k of ['good', 'light', 'mid', 'heavy']) {
+                if (t < w[k]) {
+                    sev = k;
+                    break;
+                }
+                t -= w[k];
+            }
+            id = pick(D.cards.filter(c => c.rarity === 'D' && c.curse.sev === sev)).id;
+        }
+        const c = mkCard(S, id);
+        S.deck.push(c);
+        log(S, `${why ? why + '。' : ''}禍根「${CARD[id].name}」が持ち札に紛れ込んだ。`, 'bad');
+        S.newCurses = (S.newCurses || []).concat([id]);
+        return c;
+    }
+    function gainCx(S, inst, upgraded) {
+        const first = !S.flags.cxGot;
+        S.flags.cxGot = true;
+        S.newCurses = [];
+        addCurse(S, upgraded ? `「${CARD[inst.id].name}」を強めた` : null);
+        S.pendingCx = { id: inst.id, first, up: !!upgraded, curses: S.newCurses.slice() };
+    }
+    function drawCard(S, uid) {
+        if (uid == null)
+            return;
+        S.hand.push(uid);
+        const c = cardByUid(S, uid);
+        if (!c || !isCurse(c.id) || !S.R)
+            return;
+        const R = S.R, nm = CARD[c.id].name;
+        switch (c.id) {
+            case 'curse_void':
+                removeCard(S, c);
+                log(S, `「${nm}」は手に取ったとたん、灰になった。`, 'good');
+                break;
+            case 'curse_interest':
+                S.funds = Math.max(0, S.funds - 1);
+                log(S, `「${nm}」:議会資金-1。`, 'bad');
+                break;
+            case 'curse_guarantor': {
+                log(S, `「${nm}」が別の禍根を連れてきた。`, 'bad');
+                const i = S.drawPile.findIndex(u => { const k = cardByUid(S, u); return k && isCurse(k.id); });
+                if (i >= 0)
+                    drawCard(S, S.drawPile.splice(i, 1)[0]);
+                break;
+            }
+            case 'curse_grievance':
+                addU(S, 6);
+                log(S, `「${nm}」:どこからか、低い声が聞こえる。`, 'bad');
+                break;
+            case 'curse_borrowed':
+                R.req = Math.round(R.req * 1.5);
+                log(S, `「${nm}」:このラウンドの必要対策値が${nf(R.req)}に膨らんだ。`, 'bad');
+                break;
+            case 'curse_collateral': {
+                c.g.drawn = (c.g.drawn || 0) + 1;
+                if (c.g.drawn >= 3) {
+                    const al = alive(S);
+                    if (al.length > 1) {
+                        const q = pick(al);
+                        q.dead = true;
+                        q.hp = 0;
+                        log(S, `「${nm}」の期限が来た。${q.name}は差し押さえられ、機能を失った。`, 'bad');
+                        chron(S, `${q.name}が担保に取られた`, 'bad');
+                    }
+                    removeCard(S, c);
+                }
+                else
+                    log(S, `「${nm}」:期限まであと${3 - c.g.drawn}回。`, 'bad');
+                break;
+            }
+        }
+    }
+    function handCount(S, id) { return S.hand.filter(u => (cardByUid(S, u) || {}).id === id).length; }
+    function curseRoundEnd(S) {
+        for (let i = 0; i < handCount(S, 'curse_collector'); i++) {
+            const q = alive(S).slice().sort((a, b) => b.trust - a.trust)[0];
+            if (q) {
+                q.trust = Math.max(0, q.trust - 3);
+                log(S, `「取り立て」:${q.name}の信頼-3。`, 'bad');
+            }
+        }
+        ownedList(S, 'cx_doomclock').forEach(c => {
+            c.g.hands = (c.g.hands || 0) + 1;
+            if (c.g.hands >= 12 && !c.g.struck) {
+                c.g.struck = true;
+                S.regions.forEach(r => { r.dead = true; r.hp = 0; });
+                log(S, '終末時計の針が、十二を指した。', 'bad');
+                chron(S, '終末時計が十二を指した', 'bad');
+            }
+        });
+    }
+    function curseEraEnd(S) {
+        if (owned(S, 'curse_ledger'))
+            addCurseId(S, 'curse_ledger', '帳簿の火が燃え広がった');
+        ownedList(S, 'curse_seed').forEach(() => { if (Math.random() < 0.2)
+            addCurse(S, '禍の種が芽を出した'); });
+    }
+    function addCurseId(S, id, why) { const c = mkCard(S, id); S.deck.push(c); log(S, `${why}。禍根「${CARD[id].name}」が持ち札に加わった。`, 'bad'); return c; }
     const BASIC = ['mediator', 'veteran', 'technocrat', 'regional', 'scholar'];
     const TYPES = ['自然', '人災', '社会'];
     function effectText(id) { return CARD[id].effect; }
@@ -152,9 +271,17 @@
     function loadRun(meta) {
         try {
             const S = JSON.parse(root.localStorage.getItem(RUN_KEY));
-            if (!S || S.v !== 17)
+            if (!S || S.v !== 17 || !CHAR[S.charId])
                 return null;
             S.meta = meta;
+            const gone = new Set((S.deck || []).filter(c => !CARD[c.id]).map(c => c.uid));
+            if (gone.size) {
+                S.deck = S.deck.filter(c => !gone.has(c.uid));
+                ['hand', 'drawPile', 'discard'].forEach(k => { if (S[k])
+                    S[k] = S[k].filter(u => !gone.has(u)); });
+                if (S.shop)
+                    S.shop = S.shop.filter(o => CARD[o.id]);
+            }
             return S;
         }
         catch (e) {
@@ -192,6 +319,7 @@
     }
     function chron(S, text, kind) { S.chron.push({ label: roundLabel(S), text, kind: kind || '', roundNo: S.roundNo }); }
     function owned(S, id) { return S.deck.some(c => c.id === id); }
+    function ownedUp(S, id) { return S.deck.some(c => c.id === id && (c.lv || 0) > 0); }
     function ownedList(S, id) { return S.deck.filter(c => c.id === id); }
     function maxEras(S, id) { return ownedList(S, id).reduce((m, c) => Math.max(m, c.eras), 0); }
     function hasAb(S, id) { return false; }
@@ -220,12 +348,17 @@
         if (S.charId === 'exile' && !owned(S, 'temp_capital'))
             return;
         if (d > 0 && S.flags.ccReady && owned(S, 'const_court')) {
-            S.flags.ccReady = false;
+            S.flags.ccUses = (S.flags.ccUses || 0) + 1;
+            if (S.flags.ccUses >= (ownedUp(S, 'const_court') ? 2 : 1))
+                S.flags.ccReady = false;
             log(S, '憲法裁判所が権限の移動を差し止めた。');
             return;
         }
         const beforeEff = Ceff(S);
+        const c0 = S.C;
         S.C = clamp(S.C + d, 0, 100);
+        if (S.C > c0)
+            ownedList(S, 'cx_throne').forEach(k => { k.g.cUp = (k.g.cUp || 0) + (S.C - c0); });
         if (S.R && !S.R.done && Ceff(S) > beforeEff + 0.001)
             S.R.cIncrease = true;
         S.maxC = Math.max(S.maxC, S.C);
@@ -239,16 +372,56 @@
         see(S, [id]);
         const def = CARD[id], al = S.regions.filter(r => !r.dead);
         const home = def && def.region != null ? S.regions.find(r => r.key === def.region) : null;
-        return Object.assign({ uid: S.uid++, id, rounds: 0, eras: 0, g: {}, lv: 0, region: home ? home.id : (al.length ? pick(al).id : 0) }, extra || {});
+        const free = def && (def.rarity === 'K' || def.rarity === 'D');
+        return Object.assign({ uid: S.uid++, id, rounds: 0, eras: 0, g: {}, lv: 0, region: free ? null : home ? home.id : (al.length ? pick(al).id : 0) }, extra || {});
     }
     function cardByUid(S, uid) { return S.deck.find(c => c.uid === uid); }
-    function removeCard(S, inst) {
+    function removeCard(S, inst, force) {
         if (!inst)
             return;
+        if (isSeed(inst.id) && !force)
+            return;
+        if (S.deck.includes(inst))
+            departCard(S, inst);
         S.deck = S.deck.filter(x => x !== inst);
         S.drawPile = S.drawPile.filter(u => u !== inst.uid);
         S.hand = S.hand.filter(u => u !== inst.uid);
         S.discard = S.discard.filter(u => u !== inst.uid);
+    }
+    function isHk(S, inst) { const rg = regionById(S, inst.region); return !!rg && rg.key === 'hokurei'; }
+    function departCard(S, inst) {
+        if (!S.stats || !isHk(S, inst))
+            return;
+        const def = CARD[inst.id];
+        if (!def)
+            return;
+        const base = (def.base || 0) * baseMulOf(inst.id, inst.lv || 0) + (inst.g.bb || 0);
+        if (inst.id !== 'hk_eternity') {
+            S.stats.hkGone = (S.stats.hkGone || 0) + 1;
+            S.stats.hkGoneBase = (S.stats.hkGoneBase || 0) + base;
+        }
+        const rest = S.deck.filter(k => k !== inst && k.id !== 'hk_eternity' && isHk(S, k));
+        if (rest.length && base > 0) {
+            const share = Math.round(base / 2 / rest.length * 10) / 10;
+            rest.forEach(k => { k.g.bb = (k.g.bb || 0) + share; });
+        }
+        (fxOf(S, inst) || []).forEach(t => {
+            const w = t.will;
+            if (!w)
+                return;
+            const rest2 = S.deck.filter(k => k !== inst && isHk(S, k));
+            if (w.bbHk)
+                rest2.forEach(k => { k.g.bb = (k.g.bb || 0) + w.bbHk; });
+            if (w.funds)
+                S.funds += w.funds;
+            if (w.trustHk) {
+                const r = S.regions.find(q => q.key === 'hokurei' && !q.dead);
+                if (r)
+                    r.trust += w.trustHk;
+            }
+        });
+        log(S, `「${def.name}」は去った。その思いは北嶺に残った。`, 'react');
+        emit(S, 'hkGone', 1, { inst });
     }
     function randomNames() { return { nation: pick(NATION_NAMES), leader: pick(LEADER_NAMES) }; }
     function rk(a, b) { return a < b ? a + '-' + b : b + '-' + a; }
@@ -261,7 +434,7 @@
         if (before < LINK_AT && S.rel[k] >= LINK_AT) {
             const my = ownedList(S, 'mycelium').length;
             if (my)
-                S.flags.mycelium = (S.flags.mycelium || 0) + 0.1 * my;
+                S.flags.mycelium = (S.flags.mycelium || 0) + ownedList(S, 'mycelium').reduce((a, q) => a + ((q.lv || 0) > 0 ? 0.2 : 0.1), 0);
         }
     }
     function addRel(S, a, b, d, calm) {
@@ -299,6 +472,8 @@
     }
     function initRel(S, v) { S.rel = {}; S.regions.forEach(a => S.regions.forEach(b => { if (a.id < b.id)
         S.rel[rk(a.id, b.id)] = v; })); }
+    function fixWorstRel(S, v) { const w = worstPair(S); if (w)
+        addRel(S, w[0], w[1], v, true); }
     function worstPair(S) { const ps = alivePairs(S); if (!ps.length)
         return null; const mn = Math.min(...ps.map(([a, b]) => getRel(S, a, b))); return pick(ps.filter(([a, b]) => getRel(S, a, b) === mn)); }
     function regionRelSum(S, id) { return alive(S).filter(r => r.id !== id).reduce((s, r) => s + getRel(S, id, r.id), 0); }
@@ -377,13 +552,13 @@
         emit(S, 'reroll');
         return true;
     } if (S.funds < S.P.stampReroll)
-        return false; S.funds -= S.P.stampReroll; spendNote(S, S.P.stampReroll); S.P.rr.s++; S.P.stampReroll = 2 * fib(S.P.rr.s); S.stampShop = genStampOffers(S); S.P.pendingStamp = null; return true; }
+        return false; S.funds -= S.P.stampReroll; spendNote(S, S.P.stampReroll); S.P.rr.s++; S.P.stampReroll = 2 * fib(S.P.rr.s); S.stampShop = genStampOffers(S); S.P.pendingStamp = null; emit(S, 'reroll', 1, { kind: 'stamp' }); return true; }
     function rerollFacilities(S) { if (freeRoll(S, 'fac')) {
         S.facShop = genFacOffers(S);
         emit(S, 'reroll');
         return true;
     } if (S.funds < S.P.facReroll)
-        return false; S.funds -= S.P.facReroll; spendNote(S, S.P.facReroll); S.P.rr.f++; S.P.facReroll = 2 * fib(S.P.rr.f); S.facShop = genFacOffers(S); return true; }
+        return false; S.funds -= S.P.facReroll; spendNote(S, S.P.facReroll); S.P.rr.f++; S.P.facReroll = 2 * fib(S.P.rr.f); S.facShop = genFacOffers(S); emit(S, 'reroll', 1, { kind: 'fac' }); return true; }
     function hasFac(S, id) { return (S.facilities || []).some(f => f.id === id); }
     function facCount(S, id) { return (S.facilities || []).filter(f => f.id === id).length; }
     const FACFX = {
@@ -598,6 +773,8 @@
         else {
             const k = S.carried;
             S.deck.push(mkCard(S, k.id, k.keepGrowth ? { rounds: k.rounds || 0, eras: k.eras || 0, g: k.g || {}, lv: k.lv || 0, carried: true } : { carried: true }));
+            if (k.stamp)
+                S.deck[S.deck.length - 1].stamp = k.stamp;
             log(S, `前の時間から「${CARD[k.id].name}」を持ち越した。`, 'sys');
             S.nextD = makeDisaster(S);
             enterParliament(S, true);
@@ -703,14 +880,16 @@
         let r = base * m * (S.reqMul || 1);
         if (hasTrait(S, 'technocrat') && d.boss && d.type === '自然')
             r *= 1.3;
+        if (S.revolutions)
+            r *= Math.pow(2.5, S.revolutions * S.revolutions);
         if (d.rule === 'centralSpread')
             r *= 1 + Ceff(S) / 80;
         if (d.rule === 'intrigue')
             r *= 1 + S.U / 60;
         if (S.flags.afterRevolution && owned(S, 'perm_revolution'))
-            r *= 0.5;
+            r *= ownedUp(S, 'perm_revolution') ? 1 / 3 : 0.5;
         if (S.endless && owned(S, 'apocalypse') && new Set(S.absorbed.map(n => n.type)).size >= 3)
-            r *= 0.5;
+            r *= ownedUp(S, 'apocalypse') ? 1 / 3 : 0.5;
         return Math.max(10, Math.round(r / 10) * 10);
     }
     function maxPlay(S) {
@@ -726,7 +905,23 @@
         n -= S.lowerPlay || 0;
         if (hasAb(S, 'open_table'))
             n += 2;
+        ownedList(S, 'cx_blank').forEach(c => { n += (c.lv || 0) > 0 ? 3 : 2; });
+        if (S.hand)
+            n -= handCount(S, 'curse_sloth');
         return Math.max(1, n);
+    }
+    function maxPlayNote(S) {
+        if (S.charId === 'exile')
+            return '基本4' + (owned(S, 'temp_capital') ? '、仮首都+1' : '');
+        if (S.charId === 'anarchist')
+            return '無政府主義者は5で固定';
+        const k = Math.floor(Ceff(S) / 30);
+        const nx = (k + 1) * 30;
+        return `基本4${k ? `、集権度${k * 30}以上で+${k}` : ''}${nx <= 100 ? `。集権度${nx}で+1` : ''}${S.lowerPlay ? `、制約で-${S.lowerPlay}` : ''}`;
+    }
+    function offerNote(S) {
+        const c = Ceff(S);
+        return `基本3${c >= 30 ? '、集権度30以上で+1' : ''}${c >= 60 ? '、60以上で+1' : ''}${S.offerPlus ? `、枠の追加+${S.offerPlus}` : ''}${c < 60 ? `。集権度${c >= 30 ? 60 : 30}で+1` : ''}`;
     }
     function maxDiscard(S) { return 5 + (hasAb(S, 'extradiscard') ? 2 : 0); }
     function handLimit(S) {
@@ -751,7 +946,7 @@
         S.event = null;
         const R = S.R = {
             d, req: 0, total: S.carry || 0, playsLeft: S.plays + (hasAb(S, 'extraplay') ? 2 : 0) + 2 * facCount(S, 'express'),
-            discardsLeft: d.rule === 'blackout' ? 0 : S.discards + (hasAb(S, 'extradiscard') ? 3 : 0) + 2 * facCount(S, 'archives'),
+            discardsLeft: d.rule === 'blackout' ? 0 : S.discards + (hasAb(S, 'extradiscard') ? 3 : 0) + 2 * facCount(S, 'archives') + (ownedUp(S, 'temp_capital') ? 1 : 0),
             decl: false, declBonus: 0, backerDecl: false, noDelay: false, deferred: 0, isolated: d.rule === 'isolation',
             cIncrease: false, results: [], played: 0, firstPlay: true, playsUsed: 0, discardsUsed: 0, allGeneral: true, done: false, success: null, backerPending: false, enemyRegion: null, lostRegion: null
         };
@@ -807,12 +1002,14 @@
             if (w)
                 addRel(S, w[0], w[1], 3, true);
         }
-        ownedList(S, 'round_table').forEach(() => addLinks(S, 1));
+        ownedList(S, 'round_table').forEach(c => addLinks(S, (c.lv || 0) > 0 ? 2 : 1));
         log(S, `${roundLabel(S)}:${d.name}(${d.type})。必要対策値 ${nf(R.req)}。`, d.boss ? 'boss' : 'dis');
         if (d.boss && d.restriction)
             log(S, d.restriction, 'rule');
-        if (d.boss)
-            changeC(S, S.charId === 'mirror' ? -1 : 1);
+        {
+            const Ce0 = Ceff(S);
+            changeC(S, (S.charId === 'mirror' ? -1 : 1) * (d.boss ? 2 : 1) * (2 + Ce0 / 25));
+        }
         {
             const shook = shuffle(alive(S).slice()).slice(0, d.boss ? 2 : 1);
             shook.forEach(q => { q.trust = Math.max(0, q.trust - 1); });
@@ -845,6 +1042,7 @@
             else {
                 S.propStreak = 0;
                 S.propMiss++;
+                R.propMissed = true;
                 if (!owned(S, 'false_prophecy')) {
                     allTrust(S, -2);
                     log(S, '予言は外れた。広場であなたの名前が笑われている。');
@@ -877,7 +1075,7 @@
                 if (!S.drawPile.length)
                     break;
             }
-            S.hand.push(S.drawPile.shift());
+            drawCard(S, S.drawPile.shift());
         }
     }
     function backerChoice(S, choice) {
@@ -892,8 +1090,15 @@
                 unlockCard(S, 'reverse_puppet');
         }
         else if (choice === 'cut' && owned(S, 'cut_strings')) {
-            removeCard(S, S.deck.find(x => x.id === 'cut_strings'));
-            drawTo(S);
+            {
+                const cs = S.deck.find(x => x.id === 'cut_strings' && (x.lv || 0) > 0 && !x.g.cutOnce) || S.deck.find(x => x.id === 'cut_strings');
+                if ((cs.lv || 0) > 0 && !cs.g.cutOnce)
+                    cs.g.cutOnce = true;
+                else {
+                    removeCard(S, cs);
+                    drawTo(S);
+                }
+            }
             addU(S, -20);
             log(S, '糸は切られた。背後の部屋から、しばらく物音がしなかった。');
             chron(S, '背後の勢力の宣言を拒否した', 'resist');
@@ -902,6 +1107,65 @@
             addU(S, 5);
             log(S, '宣言は見送られた。背後の部屋の扉が、少し強く閉められた。', 'react');
         }
+    }
+    function declBonusOf(S, opt) {
+        opt = opt || {};
+        let bonus = owned(S, 'perm_emergency') ? 2.5 : 2.5 * Math.pow(0.72, S.declCount);
+        if (opt.fixed)
+            bonus = 1.0;
+        if (hasTrait(S, 'mediator'))
+            bonus *= 0.5;
+        return bonus;
+    }
+    function charProfile(id) {
+        const p = { draft: 8, hand: 8, plays: 4, discards: 3, funds: 6, C: 20, regions: 6, trust: 5 };
+        const base = t => {
+            if (t === 'mediator')
+                p.C = 15;
+            if (t === 'veteran') {
+                p.C = 30;
+                p.trust = 3;
+            }
+            if (t === 'technocrat')
+                p.C = 30;
+            if (t === 'regional') {
+                p.C = 15;
+                p.trust = 4;
+                p.home = true;
+            }
+            if (t === 'scholar') {
+                p.funds = 3;
+                p.draft = 6;
+            }
+        };
+        if (id === 'twins')
+            p.twins = true;
+        else
+            base(id);
+        if (id === 'puppet')
+            p.C = 25;
+        if (id === 'exile') {
+            p.C = 0;
+            p.trust = 8;
+        }
+        if (id === 'heir')
+            p.C = 100;
+        if (id === 'citizen') {
+            p.funds = 2;
+            p.draft = 6;
+        }
+        if (id === 'anarchist') {
+            p.C = 5;
+            p.trust = 4;
+        }
+        if (id === 'mirror')
+            p.C = 80;
+        if (id === 'timetraveler') {
+            p.draft = 0;
+            p.funds = 20;
+        }
+        p.maxPlay = id === 'exile' ? 4 : id === 'anarchist' ? 5 : 4 + Math.floor((id === 'mirror' ? 100 - p.C : p.C) / 30);
+        return p;
     }
     function canDeclare(S) { return S.phase === 'round' && S.R && !S.R.decl && S.charId !== 'puppet' && !S.R.done; }
     const DECL_REACT = [
@@ -920,28 +1184,28 @@
         if (S.charId === 'puppet' && !opt.backer && !opt.auto)
             return false;
         const n = S.declCount;
-        let bonus = (owned(S, 'perm_emergency') || hasAb(S, 'emergency_norm')) ? 2.5 : 2.5 * Math.pow(0.72, n);
+        let bonus = declBonusOf(S, opt);
         S.stats.noCRounds = Math.floor((S.stats.noCRounds || 0) / 2);
-        if (opt.fixed)
-            bonus = 1.0;
-        if (hasTrait(S, 'mediator'))
-            bonus *= 0.5;
         R.decl = true;
         R.declBonus = bonus;
         R.backerDecl = !!opt.backer;
         S.declCount++;
         S.declEra++;
         let dc = 1 + 1.8 * n;
-        if (opt.backer && owned(S, 'ventriloquism'))
-            dc = 0;
+        if (opt.backer && owned(S, 'ventriloquism')) {
+            dc = ownedUp(S, 'ventriloquism') ? -3 : 0;
+            S.flags.ventA = (S.flags.ventA || 0) + (ownedUp(S, 'ventriloquism') ? 2 : 1);
+        }
         if (S.charId === 'mirror')
             dc = -dc;
         if (dc)
             changeC(S, dc);
         let du = 4 * Math.pow(1.4, n);
         if (owned(S, 'perm_emergency'))
-            du *= 2;
+            du *= ownedUp(S, 'perm_emergency') ? 1.5 : 2;
         if (owned(S, 'censorship'))
+            du *= 0.5;
+        if (opt.auto && opt.fixed && ownedUp(S, 'martial_law'))
             du *= 0.5;
         addU(S, du);
         S.streakNoC = 0;
@@ -970,6 +1234,8 @@
         return true;
     }
     const on = (b, v) => b ? v : 0;
+    const LV_SELF = new Set(['resonance', 'eschatology', 'reforestation', 'local_currency', 'citizen_science', 'vaccine', 'consensus', 'double_down', 'rally', 'uprising']);
+    const LVQ = c => (c.inst.lv || 0) > 0;
     const FX = {
         granary: () => ({}),
         central_reserve: (c, x) => ({ p: on(x.Ce >= 40, 40) }),
@@ -990,7 +1256,7 @@
         volcano_obs: (c, x) => ({ p: on(x.has('噴火'), 80) }),
         fin_supervision: (c, x) => ({ p: on(x.has('金融'), 60) }),
         disaster_edu: (c, x) => { let v = 10 * c.inst.eras; if (owned(x.S, 'edu_chain'))
-            v *= Math.pow(1.5, maxEras(x.S, 'edu_chain') + 1); return { p: v, a: on(x.d.type === '自然', 0.5) }; },
+            v *= Math.pow(ownedUp(x.S, 'edu_chain') ? 2 : 1.5, maxEras(x.S, 'edu_chain') + 1); return { p: v, a: on(x.d.type === '自然', 0.5) }; },
         training: c => ({ p: 5 * c.inst.rounds }),
         volunteer_fire: (c, x) => ({ p: 6 * x.n + 4 * c.inst.eras }),
         public_health: (c, x) => ({ a: 0.5 * (x.S.survived['疫病'] || 0) }),
@@ -1012,21 +1278,21 @@
         silent_year: (c, x) => ({ x: x.cards.length === 1 ? 8 : 1 }),
         odd_alliance: (c, x) => ({ a: on(x.L % 2 === 1, 3) }),
         last_stand: (c, x) => ({ x: x.alive.some(r => r.hp <= 2) ? 4 : 1 }),
-        festival: (c, x) => ({ auto: x.S.U < 1 && x.d.type === '社会' && !x.d.boss }),
+        festival: (c, x) => ({ auto: x.S.U <= ((c.inst.lv || 0) > 0 ? 10 : 0) && x.d.type === '社会' && !x.d.boss }),
         council_rule: (c, x) => ({ x: x.Ce <= 10 ? 3 : 1 }),
         blank_check: (c, x) => ({ x: Math.round(x.S.C) === 50 ? 4 : 1 }),
         triad: (c, x) => { const t = new Set(x.cards.map(k => k.def.target.split(':')[0])); return { x: TYPES.every(y => t.has(y)) ? 3 : 1 }; },
         chain_reaction: (c, x) => { const m = {}; x.cards.forEach(k => { const t = k.def.target.split(':')[0]; m[t] = (m[t] || 0) + 1; }); const mx = Math.max(...Object.values(m)); return { x: mx >= 3 ? mx : 1 }; },
-        rain_prayer: (c, x) => ({ auto: x.has('干ばつ') && !x.d.boss && !!x.S.prevDisaster && x.S.prevDisaster.keys.includes('洪水') }),
+        rain_prayer: (c, x) => ({ auto: !x.d.boss && !!x.S.prevDisaster && ((x.has('干ばつ') && x.S.prevDisaster.keys.includes('洪水')) || ((c.inst.lv || 0) > 0 && x.has('洪水') && x.S.prevDisaster.keys.includes('干ばつ'))) }),
         before_storm: (c, x) => ({ px: x.S.omenCount >= 3 ? 3 : 1 }),
-        arbitration: (c, x) => ({ auto: x.has('対立') && !x.d.boss }),
+        arbitration: (c, x) => { const hit = x.has('対立') && !x.d.boss; return { auto: hit, side: hit && (c.inst.lv || 0) > 0 ? S => fixWorstRel(S, 3) : null }; },
         mutual_aid: (c, x) => ({ a: Math.pow(x.L, 1.5) * x.lp / 3 }),
-        local_currency: c => ({ x: Math.min(20, Math.pow(1.1, c.inst.rounds)) }),
+        local_currency: c => ({ x: Math.min(20, Math.pow(LVQ(c) ? 1.15 : 1.1, c.inst.rounds)) }),
         grassroots: (c, x) => ({ p: x.sumTrust * x.sumTrust / 10 }),
         knowledge_share: (c, x) => { const n = x.S.deck.filter(k => RESEARCH_CARDS.has(k.id)).length; return { x: Math.pow(2, clamp(n - 1, 0, 5)) }; },
-        reforestation: c => ({ x: Math.pow(1.3, c.inst.eras) }),
+        reforestation: c => ({ x: Math.pow(LVQ(c) ? 1.44 : 1.3, c.inst.eras) }),
         self_rule: (c, x) => ({ x: Math.min(50, Math.pow(1.15, x.S.streakNoC)) }),
-        citizen_science: (c, x) => ({ px: x.d.type === '自然' ? Math.pow(1.2, x.S.survivedType['自然'] || 0) : 1 }),
+        citizen_science: (c, x) => ({ px: x.d.type === '自然' ? Math.pow(LVQ(c) ? 1.29 : 1.2, x.S.survivedType['自然'] || 0) : 1 }),
         consensus: (c, x) => {
             const g = c.inst.g;
             if (g.first == null)
@@ -1034,55 +1300,59 @@
             const k = x.S.roundNo - g.first;
             if (k < 3)
                 return { note: '合意を待っている' };
-            return { x: Math.pow(1.4, k - 2) };
+            return { x: Math.pow(LVQ(c) ? 1.58 : 1.4, k - 2) };
         },
-        vaccine: (c, x) => ({ x: x.has('疫病') ? Math.pow(1.5, x.S.experienced['疫病'] || 0) : 1 }),
+        vaccine: (c, x) => ({ x: x.has('疫病') ? Math.pow(LVQ(c) ? 1.73 : 1.5, x.S.experienced['疫病'] || 0) : 1 }),
         grid_link: (c, x) => ({ a: on(x.d.type === '人災', Math.pow(x.L, 1.3) * x.lp / 2) }),
         standing_police: (c, x) => ({ auto: x.has('陰謀') && !x.d.boss }),
         praetorian: (c, x) => ({ p: on(x.Ce >= 70, 2 * x.Ce) }),
-        purge: () => ({ side: S => { addU(S, -25); allTrust(S, -3); chron(S, '粛清を実行', 'decl'); log(S, '名簿の何人かが、翌朝から出勤しなくなった。', 'react'); } }),
+        purge: (c) => ({ side: S => { addU(S, -25); allTrust(S, (c.inst.lv || 0) > 0 ? -1 : -3); chron(S, '粛清を実行', 'decl'); log(S, '名簿の何人かが、翌朝から出勤しなくなった。', 'react'); } }),
         state_exception: (c, x) => ({ x: x.Ce >= 100 ? 10 : 1 }),
-        handshake: (c, x) => { const hit = x.has('対立') && !x.d.boss; return { auto: hit, side: hit ? S => addLinks(S, 1, '握手の儀') : null }; },
-        veterans_assoc: (c, x) => ({ p: on(x.d.type === '社会', 15 * x.n) }),
+        handshake: (c, x) => { const hit = x.has('対立') && !x.d.boss; return { p: ((c.inst.lv || 0) > 0 ? 32 : 20) * x.L, auto: hit, side: hit ? S => addLinks(S, (c.inst.lv || 0) > 0 ? 2 : 1, '握手の儀') : null }; },
+        veterans_assoc: (c, x) => ({ p: on(x.d.type === '社会', 40 * x.n) }),
         cost_benefit: () => ({ a: 2 }),
-        home_banner: (c, x) => { const h = x.S.homeId != null ? regionById(x.S, x.S.homeId) : null; return { x: h && !h.dead ? 2 : 1 }; },
-        regional_league: (c, x) => { const h = x.S.homeId != null ? regionById(x.S, x.S.homeId) : null; return { p: h && !h.dead ? 20 * x.L * x.lp : 0 }; },
+        home_banner: (c, x) => { const h = x.S.homeId != null ? regionById(x.S, x.S.homeId) : null; return { x: h && !h.dead ? 3 : 1 }; },
+        regional_league: (c, x) => { const h = x.S.homeId != null ? regionById(x.S, x.S.homeId) : null; return { a: h && !h.dead ? 0.5 * x.L * x.lp : 0 }; },
         literature_review: (c, x) => {
             const g = c.inst.g;
             if (g.done || !x.S.prevDisaster)
                 return {};
             const t = x.S.prevDisaster.type;
-            return { side: S => { g.done = true; S.litTypes[t] = (S.litTypes[t] || 0) + 2; log(S, `文献調査:${t}系の災害への理解が深まった。`); } };
+            return { side: S => { g.done = true; S.litTypes[t] = (S.litTypes[t] || 0) + ((c.inst.lv || 0) > 0 ? 3.2 : 2); log(S, `文献調査:${t}系の災害への理解が深まった。`); } };
         },
-        return_promise: (c, x) => ({ x: x.alive.every(r => r.trust >= 7) ? 4 : 1 }),
+        return_promise: (c, x) => ({ x: x.alive.every(r => r.trust >= 5) ? 4 : 1 }),
         scattered_envoys: (c, x) => { const k = x.localCount; return { side: S => addLinks(S, k, '散らばる大使') }; },
-        dissolution: () => ({ side: S => { changeC(S, -10); S.flags.dissolutionEra = S.era; chron(S, '解体令を発布', 'resist'); } }),
-        burn_legacy: () => ({ consume: true, side: S => burnLegacy(S) }),
-        last_speech: () => ({ consume: true, side: S => { changeC(S, -30); addU(S, 30); chron(S, '最後の演説', 'resist'); log(S, '演説は長かった。最後まで聞いていた者は、多くなかった。', 'react'); } }),
+        dissolution: (c) => ({ consume: true, side: S => { changeC(S, (c.inst.lv || 0) > 0 ? -15 : -10); S.flags.dissolutionEra = S.era; S.flags.dissolveMul = (c.inst.lv || 0) > 0 ? 2 : 1.5; chron(S, '解体令を発布', 'resist'); } }),
+        burn_legacy: (c) => ({ consume: true, side: S => burnLegacy(S, (c.inst.lv || 0) > 0) }),
+        last_speech: (c) => ({ x: (c.inst.lv || 0) > 0 ? 8 : 5, consume: true, side: S => { changeC(S, (c.inst.lv || 0) > 0 ? -50 : -30); chron(S, '最後の演説', 'resist'); log(S, '演説は長かった。最後まで聞いていた者は、多くなかった。', 'react'); } }),
         neighbor: (c, x) => ({ p: 10 * x.S.hand.filter(u => u !== c.inst.uid && (cardByUid(x.S, u) || {}).id === 'neighbor').length }),
         accidental_hero: () => { const hit = Math.random() < 0.05; return { x: hit ? 10 : 1, note: hit ? '誰かが現れた' : '' }; },
-        nameless_crowd: (c, x) => ({ p: 3 * Math.pow(x.S.hand.length, 2) }),
-        eschatology: (c, x) => ({ a: x.S.propStreak }),
-        awakening: (c, x) => ({ x: Math.max(1, x.S.idleStack * 2), consume: true, side: S => { S.idleStack = 1; } }),
+        nameless_crowd: (c, x) => ({ p: 3 * Math.pow(x.S.hand.length, (c.inst.lv || 0) > 0 ? 3 : 2) }),
+        eschatology: (c, x) => ({ x: Math.pow(LVQ(c) ? 1.36 : 1.25, x.S.propStreak) }),
+        apocalypse: (c, x) => ({ a: ((c.inst.lv || 0) > 0 ? 0.8 : 0.5) * x.S.absorbed.length }),
+        oracle: (c, x) => ({ x: x.d.boss ? ((c.inst.lv || 0) > 0 ? 3 : 2) : 1 }),
+        false_prophecy: (c, x) => ({ x: x.R.propMissed ? ((c.inst.lv || 0) > 0 ? 3 : 2) : 1 }),
+        awakening: (c, x) => ({ x: Math.max(1, x.S.idleStack * ((c.inst.lv || 0) > 0 ? 3 : 2)), consume: true, side: S => { S.idleStack = 1; } }),
         schism: () => ({ consume: true, side: S => splitRegion(S, pick(alive(S)).id) }),
-        union_without: (c, x) => ({ a: x.n * x.n / 4 }),
+        union_without: (c, x) => ({ a: Math.pow(x.n, (c.inst.lv || 0) > 0 ? 3 : 2) / 4 }),
         inverted_chronicle: (c, x) => ({ x: x.S.critical ? 5 : 1 }),
-        uprising: () => ({ consume: true, side: S => { S.flags.pendingRevolution = true; } }),
-        double_down: (c, x) => ({ x: x.S.betMult }),
+        uprising: c => ({ consume: true, side: S => { S.flags.pendingRevolution = LVQ(c) ? 3.9 : 3; } }),
+        double_down: (c, x) => ({ x: LVQ(c) ? Math.pow(2.45, Math.log2(Math.max(1, x.S.betMult))) : x.S.betMult }),
         twin_will: () => ({ a: 1 }),
         deja_vu: (c, x) => ({ px: x.S.meta.lastDisaster === x.d.name ? 3 : 1 }),
-        devour: (c, x) => ({ p: 50 * x.S.absorbed.filter(a => a.type === x.d.type).length }),
-        resonance: (c, x) => ({ x: Math.max(1, new Set(x.S.absorbed.map(a => a.type)).size) }),
+        devour: (c, x) => ({ a: 1 * x.S.absorbed.filter(a => a.type === x.d.type).length }),
+        resonance: (c, x) => ({ x: Math.pow(LVQ(c) ? 1.29 : 1.2, new Set(x.S.absorbed.map(a => a.name)).size) }),
         donation: () => ({ side: S => { S.funds += 2; }, note: '議会資金+2' }),
         tax_revenue: (c, x) => ({ side: S => { S.funds += Math.floor(S.C / 20); }, note: `議会資金+${Math.floor(x.S.C / 20)}` }),
         local_industry: (c, x) => { const r = c.region; const v = r ? Math.floor(r.trust / 3) : 0; return { side: S => { S.funds += v; }, note: `議会資金+${v}` }; },
         windfall: (c, x) => x.R.playsLeft === 1 ? { side: S => { S.funds += 4; }, note: '議会資金+4' } : {},
+        hk_eternity: (c, x) => { const up = (c.inst.lv || 0) > 0 && x.d.rule !== 'noUpgrade'; return { p: extraBase(x.S, 'hk_eternity', up ? 1 : 0), x: Math.pow(up ? 1.2 : 1.1, x.S.stats.hkGone || 0) }; },
         encore: () => ({ retrig: 'prev' }),
         echo: () => ({ retrig: 'sameRegion' }),
         chorus: () => ({ retrig: 'allBefore' }),
         reflection: () => ({ retrig: 'prev' }),
         double_sign: () => ({ retrig: 'best' }),
-        rally: () => ({ rally: 1.5, note: '以後の対応力×1.5' }),
+        rally: c => ({ rally: LVQ(c) ? 1.73 : 1.5, note: `以後の対応力×${LVQ(c) ? 1.73 : 1.5}` }),
         amplifier: () => ({ x: 1.5 }),
         bell: (c, x) => ({ x: Math.pow(1.15, x.firedCount) }),
         jackpot: (c, x) => ({ x: x.M >= 10 ? 2 : 1 }),
@@ -1186,6 +1456,17 @@
             case 'funds': return S.funds;
             case 'posRel': return alivePairs(S).reduce((s2, [a, b]) => s2 + Math.max(0, getRel(S, a, b)), 0);
             case 'playsUsedPlus1': return R.playsUsed + 1;
+            case 'playsUsedPlus2': return R.playsUsed + 2;
+            case 'hkGone': return S.stats.hkGone || 0;
+            case 'researchFired': return x.firedResearch || 0;
+            case 'researchOtherRegion': return others.filter(k => RESEARCH_CARDS.has(k.def.id) && k.inst.region !== c.inst.region).length;
+            case 'playedSq': return x.cards.length * x.cards.length;
+            case 'researchRun10': return Math.floor((S.stats.researchFired || 0) / 10);
+            case 'commonOthers': return others.filter(k => k.def.rarity === 'C').length;
+            case 'commonDeck': return S.deck.filter(k => CARD[k.id] && CARD[k.id].rarity === 'C').length;
+            case 'omens': return S.omenCount || 0;
+            case 'hkGone2': return Math.floor((S.stats.hkGone || 0) / 2);
+            case 'hkGoneBase10': return Math.floor((S.stats.hkGoneBase || 0) / 10);
             case 'uses': return c.inst.g.uses || 0;
             case 'statSum': return (S.stats.trustTaken || 0) + (S.stats.damageTaken || 0) + (S.stats.fails || 0);
             case 'noCRounds': return S.stats.noCRounds || 0;
@@ -1235,6 +1516,12 @@
             let ok = true;
             if (k === 'type')
                 ok = x.d.type === v;
+            else if (k === 'typeNot')
+                ok = x.d.type !== v;
+            else if (k === 'allResearch')
+                ok = x.cards.every(q => RESEARCH_CARDS.has(q.def.id)) === v;
+            else if (k === 'allCommon')
+                ok = x.cards.every(q => q.def.rarity === 'C') === v;
             else if (k === 'key')
                 ok = x.has(v);
             else if (k === 'keyAny')
@@ -1364,6 +1651,16 @@
     function lvUp(S, inst, n) {
         if (!inst || !CARD[inst.id])
             return;
+        if (CARD[inst.id].noUp)
+            return;
+        if (isCx(inst.id)) {
+            const r0 = lvUpInner(S, inst, n);
+            gainCx(S, inst, true);
+            return r0;
+        }
+        return lvUpInner(S, inst, n);
+    }
+    function lvUpInner(S, inst, n) {
         const def = CARD[inst.id];
         if (def.evolve && CARD[def.evolve]) {
             const old = def.name;
@@ -1375,7 +1672,15 @@
             return;
         }
         const b = inst.lv || 0;
+        const cdOf = () => { const t = def.fx && (fxOf(S, inst) || []).find(q => q.countdown); return t ? t.countdown.n : null; };
+        const limOf = () => { const t = def.fx && (fxOf(S, inst) || []).find(q => q.limited); return t ? t.limited : null; };
+        const n0 = cdOf(), l0 = limOf();
         inst.lv = Math.min(maxLvOf(S, inst), b + n);
+        const n1 = cdOf(), l1 = limOf();
+        if (n0 != null && n1 != null && n1 < n0 && inst.g.cd != null)
+            inst.g.cd = Math.max(1, inst.g.cd - (n0 - n1));
+        if (l0 != null && l1 != null && l1 > l0 && inst.g.left != null)
+            inst.g.left += l1 - l0;
         if (inst.lv > b)
             emit(S, 'upgrade', inst.lv - b, { inst });
     }
@@ -1439,7 +1744,8 @@
         return true;
     }
     function fxOf(S, inst) { const def = CARD[inst.id]; if (!def || !def.fx)
-        return null; return (inst.lv || 0) > 0 && upMode(def) === 'num' ? upTerms(def, inst.lv) : def.fx; }
+        return null; if ((inst.lv || 0) > 0 && UPALT[def.id] && UPALT[def.id].fx)
+        return UPALT[def.id].fx; return (inst.lv || 0) > 0 && upMode(def) === 'num' ? upTerms(def, inst.lv) : def.fx; }
     function emit(S, ev, n, info) {
         n = n || 1;
         S._emitDepth = (S._emitDepth || 0) + 1;
@@ -1525,7 +1831,7 @@
         }
         else if (k === 'gainRare') {
             const pool = D.cards.filter(q => q.rarity === v && isAvailable(S, q.id));
-            if (pool.length) {
+            for (let i = 0; i < (d.count || 1) && pool.length; i++) {
                 const c = pick(pool);
                 gainCard(S, c.id, '');
                 log(S, `「${c.name}」が手に入った(${who})。`, 'unlock');
@@ -1644,8 +1950,8 @@
     function upFunds(v, lv, rep) { if (!(v > 0))
         return v; return rep ? Math.round(v * (1 + 0.12 * lv)) : Math.max(v + 1, Math.ceil(v * 1.5)); }
     function upCount(n, lv, rep) { if (!(n > 1))
-        return n; return rep ? Math.max(1, n - Math.floor(lv / 2)) : Math.max(1, Math.round(n * 0.65)); }
-    function upLimited(n, lv, rep) { return rep ? n + Math.floor(lv / 2) : n + Math.max(1, Math.round(n * 0.5)); }
+        return n; return rep ? Math.max(1, Math.min(n - Math.ceil(lv / 2), Math.round(n * Math.pow(0.9, lv)))) : Math.max(1, Math.min(n - 1, Math.round(n * 0.65))); }
+    function upLimited(n, lv, rep) { return rep ? n + Math.ceil(lv / 2) : n + Math.max(1, Math.round(n * 0.5)); }
     function upPow(v, lv, rep) { return rnd2(1 + (v - 1) * (rep ? 1 + 0.12 * lv : 1.5)); }
     function upPct(v, lv, rep) { return rnd2(v * (rep ? 1 + 0.12 * lv : 1.5)); }
     function upOdds(n) { return n >= 3 ? n - 1 : n; }
@@ -1653,10 +1959,13 @@
         if (!lv)
             return text;
         if (legacy) {
-            return text.replace(/(倍率|対応力)(\+|×)(\d+(?:\.\d+)?)/g, (m, w, op, n) => w + op + (op === '×' ? rnd2(1 + (+n - 1) * 1.45) : (isInt(+n) ? Math.max(+n + 1, Math.round(+n * 1.6)) : rnd2(+n * 1.6))));
+            const fa = rep ? 1 + 0.12 * lv : 1.6, fm = rep ? 1 + 0.12 * lv : 1.45;
+            return text.replace(/(倍率|対応力|上限|時代ごとに)(\+|×)(\d+(?:\.\d+)?)/g, (m, w, op, n) => (w === '上限' && op === '×') ? m : w + op + (op === '×' ? rnd2(1 + (+n - 1) * fm) : rnd2(+n * fa)));
         }
         const L = legacy ? { m: x => rnd2(1 + (x - 1) * 1.45), a: v => (isInt(v) ? Math.max(v + 1, Math.round(v * 1.6)) : rnd2(v * 1.6)) } : null;
         const re = /(資金\+)(\d+(?:\.\d+)?)|(\d+)(回ごとに|回目)|(使えるのは)(\d+)(回)|(信頼が?|平均が)(\d+)(以下)|(\d+)(枚以上)|1\/(\d+)|(\d+(?:\.\d+)?)(乗)|(\d+(?:\.\d+)?)(%)|×(\d+(?:\.\d+)?)|\+(\d+(?:\.\d+)?)/g;
+        const keep = [];
+        text = text.replace(rep ? /(集権度|不穏度)([+-]\d+(?:\.\d+)?)|\d+回ごとにこのカードを/g : /(集権度|不穏度)([+-]\d+(?:\.\d+)?)/g, m => { keep.push(m); return `\u0000${keep.length - 1}\u0000`; });
         return text.replace(re, (m, f1, f2, c1, c2, l1, l2, l3, t1, t2, t3, g1, g2, o1, p1, p2, q1, q2, x1, a1) => {
             if (f1)
                 return f1 + (legacy ? L.a(+f2) : upFunds(+f2, lv, rep));
@@ -1679,7 +1988,7 @@
             if (a1)
                 return '+' + (legacy ? L.a(+a1) : upAdd(+a1, lv, rep));
             return m;
-        });
+        }).replace(/\u0000(\d+)\u0000/g, (m, k) => keep[+k]);
     }
     function upDo(d, lv, rep) {
         const o = Object.assign({}, d);
@@ -1709,6 +2018,8 @@
             o.relAll = upAdd(o.relAll, lv, rep);
         if (o.fundsPerUnique)
             o.fundsPerUnique = upAdd(o.fundsPerUnique, lv, rep);
+        if (o.slot)
+            o.slot = upAdd(o.slot, lv, rep);
         return o;
     }
     function scaleTerm(t0, m) {
@@ -1789,6 +2100,23 @@
             t.coin = [1 / upOdds(Math.round(1 / t.coin[0])), upMul(t.coin[1], lv, rep), t.coin[2]];
         if (t.limited)
             t.limited = upLimited(t.limited, lv, rep);
+        if (t.sacHand)
+            t.sacHand = upMul(t.sacHand, lv, rep);
+        if (t.carryPct)
+            t.carryPct = upPct(t.carryPct, lv, rep);
+        if (t.missBankResearch)
+            t.missBankResearch = upAdd(t.missBankResearch, lv, rep);
+        if (t.cap > 0 && t.funds > 0)
+            t.cap = upAdd(t.cap, lv, rep);
+        if (t.will) {
+            const w = t.will = Object.assign({}, t.will);
+            if (w.bbHk)
+                w.bbHk = upAdd(w.bbHk, lv, rep);
+            if (w.funds)
+                w.funds = upFunds(w.funds, lv, rep);
+            if (w.trustHk)
+                w.trustHk = upAdd(w.trustHk, lv, rep);
+        }
         if (t.grow) {
             if (t.grow.p)
                 t.grow.p = upAdd(t.grow.p, lv, rep);
@@ -1806,7 +2134,8 @@
         if (t.rel && t.rel.d > 0)
             t.rel.d = upAdd(t.rel.d, lv, rep);
         if (t.watch) {
-            t.watch.n = upCount(t.watch.n, lv, rep);
+            if (!(rep && t.watch.do.levelUpSelf))
+                t.watch.n = upCount(t.watch.n, lv, rep);
             t.watch.do = upDo(t.watch.do, lv, rep);
         }
         if (t.countdown) {
@@ -1820,6 +2149,8 @@
                 t.if.avgTrustLte += 1;
             if (t.if.playedGte != null)
                 t.if.playedGte = Math.max(1, t.if.playedGte - 1);
+            if (t.if.sameGte != null)
+                t.if = Object.assign({}, t.if, { sameGte: Math.max(1, t.if.sameGte - 1) });
         }
         if (t.per === 'lowTrust' || (t.if && t.if.lowTrustPlayed))
             t.lowT = 4;
@@ -1832,17 +2163,105 @@
             return UPCACHE[key];
         return (UPCACHE[key] = def.fx.map(t => upTerm(t, lv, !!def.upRepeat)));
     }
+    const UPALT = {
+        cx_scorched: { text: '出すと、いちばん傷ついている地方を壊滅させ、その地方のカードの基礎の合計×8を対応力に足す(地方が1つしか残っていなければ何もしない)', fx: [{ scorch: 8 }] },
+        cx_emergency: { text: 'この手の倍率に、集権度÷8を掛ける', fx: [{ xByC: 8 }] },
+        cx_blank: { text: '持っていると、一手で出せる枚数+3。そのかわり、地方のカードは発動しない', fx: [{ passive: 'blank' }] },
+        cx_doomclock: { text: 'ラウンドが終わるたびに針が1つ進み、倍率×2.5を針の数だけ掛ける。針が12に届くと全地方が壊滅する', fx: [{ doomX: 2.5 }] },
+        cx_purge: { text: '出すと、持ち札から禍根を優先して5枚消し(足りなければ基礎の小さいカード)、その基礎の合計をこのカードの基礎に積む', fx: [{ purge: 5 }] },
+        cx_bookburn: { text: '出すと、持ち札の研究系のカードをすべて消す。これまでに消した1枚につき、このカードの倍率×2.5', fx: [{ burn: 2.5 }] },
+        cx_throne: { text: '持ってから集権度が1上がるたびに、このカードの倍率+0.8が積み上がる', fx: [{ throne: 0.8 }] },
+        cx_funeral: { text: '壊滅した地方1つにつき倍率×2', fx: [{ per: 'deadRegions', x: 2 }] },
+        provisional_gov: { text: '持っていると、壊滅を2回まで肩代わりする。2回目で消える' },
+        expert_panel: { text: '持っていると、議会で次の災害の型と名前が分かる' },
+        reconciliation: { text: '分離運動を乗り切るたびに全地方の信頼+2' },
+        muni_bond: { text: '持っていると、時代ごとに健在な地方1つにつき議会資金+2' },
+        festival: { text: '広場がおおむね穏やかなとき、社会系の通常災害を無効化' },
+        razor_edge: { text: '持っていると、必要対策値の10%以内の差で乗り切ったとき超過分の10倍を次へ持ち越す' },
+        rain_prayer: { text: '前のラウンドが洪水なら干ばつを、干ばつなら洪水を無効化' },
+        arbitration: { text: '地方間対立を無効化し、国内で最も悪い関係値+3' },
+        const_court: { text: '持っていると、集権度の上昇を時代に二度まで止める' },
+        compound: { text: '持っていると、余った対策値の1.15倍を次のラウンドへ繰り越す' },
+        mycelium: { text: '協力関係が増えるたびに、協力関係の数で伸びるカードが2割ずつ強くなる(累積)' },
+        edu_chain: { text: '防災教育の対応力と倍率が、時代ごとに×2' },
+        standing_police: { text: '陰謀を無効化する' },
+        perm_emergency: { text: '持っていると、緊急事態宣言の効き目が落ちなくなる。人々の苛立ちは1.5倍の速さで募る' },
+        censorship: { text: '持っていると、宣言で募る苛立ちが半分' },
+        secret_police: { text: '持っていると、クーデターを時代に一度打ち消す。摘発は表に出ない' },
+        surveillance: { text: '持っていると毎ラウンド、街のざわめきが大きく静まる。時代ごとに全地方の信頼-1' },
+        martial_law: { text: '持っていると、毎ラウンド自動で緊急事態宣言が出る(効き目は固定)。その宣言で募る苛立ちは半分' },
+        purge: { text: '出すと街のざわめきがほとんど消える。全地方の信頼-1' },
+        round_table: { text: '持っていると、毎ラウンド協力関係+2。出すと協力関係1本につき倍率+0.5', fx: [{ per: 'links', a: 0.5 }] },
+        handshake: { text: '地方間対立を無効化し、協力関係+2。協力関係1本につき対応力+32' },
+        homecoming: { text: '持っていると、壊滅したとき一度だけ出身地方から再起する。ほかの地方も残り3・信頼5で戻る' },
+        cut_strings: { text: '持っていると、背後の宣言を二度まで拒否できる。拒否するたび、張り詰めた空気がほどける。二度目で消える' },
+        reverse_puppet: { text: '持っていると、背後の宣言の倍率がさらに二度掛かる' },
+        ventriloquism: { text: '持っていると、背後の宣言で集権度が上がらず、逆に3下がる。背後の宣言に乗るたびに倍率+2(恒久)' },
+        temp_capital: { text: '持っていると、1手で出せるカード+1、引き直し+1。集権度が動くようになる' },
+        dissolution: { text: '出すと集権度-15。その時代のあいだ、地方のカードの対応力×2。一度使うと消える' },
+        burn_legacy: { text: '出すと抑圧のカード一枚を破棄し、地方のカード二枚(うち一枚はエピック以上)に変える。破棄したカードの基礎は二枚に分けて引き継がれる。一度使うと消える' },
+        last_speech: { text: '出すと集権度-50。この手の倍率×8。一度使うと消える' },
+        rs_index: { text: '出すと、山札から研究系のカードを2枚引く', fx: [{ drawResearch: 2 }] },
+        rs_symposium: { text: '研究系のカードだけで出すと、出した枚数を二乗した数の2倍を倍率に足す', fx: [{ if: { allResearch: true }, per: 'playedSq', a: 2 }] },
+        lecture_notes: { text: '研究系のカードの対応力×2.5。出すと、一緒に出した研究系のカード1枚につき倍率×1.75', fx: [{ per: 'researchOthers', x: 1.75 }] },
+        silent_majority: { text: '持っていると、宣言0回で時代を終えるたびに倍率×1.5(恒久)' },
+        standardize: { text: '持っていると、型が全般のカードの対応力×1.8' },
+        oracle: { text: '持っていると、議会で次のボス災害の名前と、その災害の制約が分かる。ボスのとき倍率×3' },
+        false_prophecy: { text: '持っていると、予言が外れても信頼が落ちない。予言が外れたラウンドは倍率×3' },
+        throne_dust: { text: '持っていると、怠惰の倍率(何もせず手番を終えるたびに積もる)が、行動しても1に戻らない。積もり方が×1.75になる' },
+        awakening: { text: '怠惰の倍率の3倍を、この手の倍率に掛ける。怠惰の倍率は1に戻る。一度使うと消える' },
+        union_without: { text: '健在な地方の数の三乗÷4を倍率に加算' },
+        free_city: { base: 2 },
+        mirror_parliament: { base: 2 },
+        perm_revolution: { text: '持っていると、革命直後のラウンドは必要対策値が1/3' },
+        loaded_dice: { text: '持っていると、コイン投げを時代に二度までやり直す' },
+        house: { text: '持っていると、コイン投げで負けた被害が半分になり資金+6' },
+        swap: { base: 2 },
+        revision: { text: '持っていると、失敗したラウンドを二度までやり直せる。二度目で消える' },
+        future_memory: { text: '持っていると、次のランに持ち越すカードが成長と調印を保つ' },
+        apocalypse: { text: '取り込んだ災害1つにつき倍率+0.8。全型を取り込んだ後のエンドレスでは、必要対策値が1/3' },
+        grand_chorus: { base: 3 },
+        mirror_of_ages: { text: '発動したとき、それまでの倍率をもう一度掛ける(1手に2回まで)' },
+        masterwork: { text: 'ボスを越えるたびに、まだ強化していないカードのうち基礎の最も高い二枚を強化', fx: [{ watch: { ev: 'bossWin', n: 1, do: { levelUpBest: 2 }, repeat: true } }, { useAcc: true }] },
+        tradition: { text: '持っているだけで、ボスを越えるたびにまだ強化していないカードからランダムに2枚を強化', fx: [{ countdown: { n: 1, on: 'boss', do: { levelUpRandom: 2 }, repeat: true } }] },
+        standard_revision: { text: '持っているだけで、ラウンドを4回乗り切るごとに、まだ強化していないカードを一枚強化', fx: [{ countdown: { n: 4, on: 'win', do: { levelUpLowest: 1 }, repeat: true } }] },
+        victory_arch: { text: 'ボスを越えるたびに、まだ強化していないカードからランダムに2枚を強化', fx: [{ watch: { ev: 'bossWin', n: 1, do: { levelUpRandom: 2 }, repeat: true } }, { useAcc: true }] },
+        lessons_learned: { text: 'ラウンドを乗り切れないたびに、まだ強化していないカードからランダムに3枚を強化', fx: [{ watch: { ev: 'fail', n: 1, do: { levelUpRandom: 3 }, repeat: true } }, { useAcc: true }] },
+        time_capsule: { text: 'ラウンドが終わるのを8回数えると、ランダムなレジェンドのカードを2枚得る。このカードは消える', fx: [{ watch: { ev: 'round', n: 8, do: { gainRare: 'X', count: 2 }, repeat: false } }, { useAcc: true }] },
+        hk_eternity: { text: '北嶺のカードが去るたびに、その基礎の2倍をこのカードの基礎に加える。去った北嶺のカード1枚につき倍率×1.2' },
+        surplus_cash: { text: 'このラウンドを乗り切ったとき、余った対策値が必要対策値の10%ごとに議会資金+2(最大+16)', fx: [{ overFunds: 2 }] },
+        hk_last_pass: { text: '最後の手番で出すと、このラウンドで使った手番の数+2だけ倍率を掛ける', fx: [{ if: { last: true }, xq: 'playsUsedPlus2' }] },
+        grand_ambition: { text: 'ラウンドを乗り切るのを20回数えると、持ち札すべてを強化。このカードは消える', fx: [{ watch: { ev: 'win', n: 20, do: { levelUpAll: 1 }, repeat: false } }, { useAcc: true }] }
+    };
+    function extraBase(S, id, lv) {
+        if (id === 'hk_eternity')
+            return Math.round((S.stats.hkGoneBase || 0) * (lv ? 2 : 1));
+        return 0;
+    }
+    function baseMulOf(id, lv) {
+        if (!lv)
+            return 1;
+        const a = UPALT[id];
+        if (a && a.base)
+            return a.base;
+        if (CARD[id] && CARD[id].upRepeat)
+            return 1 + lv;
+        return 1;
+    }
     function upMode(def) {
         if (def._up)
             return def._up;
         if (def.evolve)
             return (def._up = 'evolve');
-        if (/もう一度発動/.test(def.effect) && !/もう一度発動したとき/.test(def.effect))
+        if (UPALT[def.id])
+            return (def._up = 'alt');
+        if (/もう一度発動/.test(def.effect.replace(/もう一度発動(したとき|したカード|するたび)/g, '')))
             return (def._up = 'retrig2');
         if (upText(def.effect, 1, false, !def.fx) !== def.effect)
             return (def._up = 'num');
         return (def._up = 'self2');
     }
+    const growExp = u => Math.pow(u, 0.65);
     function runTerms(terms, c, x, k) {
         k = k || 1;
         const kx = v => 1 + (v - 1) * k;
@@ -1871,9 +2290,9 @@
                 if (t.grow.a)
                     r.a += t.grow.a * u * k;
                 if (t.grow.xm)
-                    r.x *= Math.pow(kx(t.grow.xm), Math.pow(u, 0.8));
+                    r.x *= Math.pow(kx(t.grow.xm), growExp(u));
                 if (t.grow.pm)
-                    r.pm = (r.pm || 1) * Math.pow(kx(t.grow.pm), Math.pow(u, 0.8));
+                    r.pm = (r.pm || 1) * Math.pow(kx(t.grow.pm), growExp(u));
             }
             if (t.xPerRel || t.aPerRel) {
                 let s = 0;
@@ -1960,7 +2379,7 @@
                 const f0 = x.S.funds;
                 r.a += t.spendAll * f0 * k;
                 notes.push(`議会資金${f0}を使う`);
-                sides.push(S => { S.funds = 0; });
+                sides.push(S => { const v = S.funds; S.funds = 0; spendNote(S, v); });
             }
             if (t.endPowM)
                 r.endPowM = t.endPowM;
@@ -2107,7 +2526,7 @@
                 r.retrigNext = true;
             if (t.sacHand) {
                 const played = x.cards.map(q => q.inst.uid);
-                const cand = x.S.hand.filter(u => !played.includes(u)).map(u => cardByUid(x.S, u)).filter(Boolean).sort((a, b) => (CARD[b.id].base || 0) - (CARD[a.id].base || 0));
+                const cand = x.S.hand.filter(u => !played.includes(u)).map(u => cardByUid(x.S, u)).filter(Boolean).filter(q => !t.sacSame || q.region === c.inst.region).sort((a, b) => (CARD[b.id].base || 0) - (CARD[a.id].base || 0));
                 if (cand[0]) {
                     const tgt = cand[0];
                     r.p += ((CARD[tgt.id].base || 0) + (tgt.g.bb || 0)) * t.sacHand;
@@ -2122,7 +2541,79 @@
                     const hit = Math.random() < t.coin[0];
                     r.x *= hit ? t.coin[1] : t.coin[2];
                     notes.push(hit ? '当たり' : '外れ');
+                    if (!hit && t.missBankResearch) {
+                        const v = t.missBankResearch;
+                        notes.push(`研究系の基礎+${v}`);
+                        sides.push(S => S.deck.forEach(k => { if (RESEARCH_CARDS.has(k.id))
+                            k.g.bb = (k.g.bb || 0) + v; }));
+                    }
                 }
+            }
+            if (t.vanish)
+                r.consume = true;
+            if (t.xByC) {
+                const v = Math.max(1, x.Ce / t.xByC);
+                r.x *= v;
+                notes.push(`集権度÷${t.xByC}=×${r2(v)}`);
+            }
+            if (t.doomX) {
+                const h = g.hands || 0;
+                const v = Math.pow(t.doomX, h);
+                r.x *= v;
+                notes.push(`針${h}`);
+            }
+            if (t.throne) {
+                r.a += t.throne * (g.cUp || 0);
+            }
+            if (t.scorch) {
+                const S0 = x.S, al = alive(S0);
+                if (al.length > 1) {
+                    const q = al.slice().sort((a, b) => a.hp / a.max - b.hp / b.max || a.id - b.id)[0];
+                    const sum = S0.deck.filter(k => k.region === q.id).reduce((s2, k) => s2 + (CARD[k.id].base || 0) * baseMulOf(k.id, k.lv || 0) + (k.g.bb || 0), 0);
+                    r.p += sum * t.scorch;
+                    notes.push(`${q.name}を焦土に`);
+                    sides.push(S => { const q2 = regionById(S, q.id); if (q2 && !q2.dead && alive(S).length > 1) {
+                        q2.dead = true;
+                        q2.hp = 0;
+                        log(S, `${q2.name}は焼き払われた。`, 'bad');
+                        chron(S, `${q2.name}を焦土に`, 'bad');
+                    } });
+                }
+                else
+                    notes.push('焼く地方がない');
+            }
+            if (t.burn) {
+                const S0 = x.S, now = S0.deck.filter(k => RESEARCH_CARDS.has(k.id)).length;
+                const v = Math.pow(t.burn, (g.burned || 0) + now);
+                r.x *= v;
+                if (now)
+                    notes.push(`${now}冊を焼く`);
+                sides.push(S => { const vic = S.deck.filter(k => RESEARCH_CARDS.has(k.id)); vic.forEach(k => removeCard(S, k)); g.burned = (g.burned || 0) + vic.length; if (vic.length)
+                    log(S, `研究系のカード${vic.length}枚が焼かれた。`, 'bad'); });
+            }
+            if (t.purge) {
+                const self = c.inst, inHand = new Set(x.cards.map(q => q.inst.uid));
+                notes.push(`${t.purge}枚を粛清`);
+                sides.push(S => {
+                    const cand = S.deck.filter(k => k !== self && !isSeed(k.id) && !inHand.has(k.uid));
+                    cand.sort((a, b) => (isCurse(b.id) ? 1 : 0) - (isCurse(a.id) ? 1 : 0) || ((CARD[a.id].base || 0) + (a.g.bb || 0)) - ((CARD[b.id].base || 0) + (b.g.bb || 0)));
+                    const vic = cand.slice(0, t.purge);
+                    let sum = 0;
+                    vic.forEach(k => { sum += (CARD[k.id].base || 0) * baseMulOf(k.id, k.lv || 0) + (k.g.bb || 0); removeCard(S, k); });
+                    self.g.bb = (self.g.bb || 0) + sum;
+                    if (vic.length)
+                        log(S, `名簿に載った${vic.length}枚(${vic.map(k => CARD[k.id].name).join('・')})が消えた。基礎+${Math.round(sum)}。`, 'bad');
+                });
+            }
+            if (t.drawResearch) {
+                const n = t.drawResearch;
+                notes.push(`研究系を${n}枚引く`);
+                sides.push(S => { for (let q = 0; q < n; q++) {
+                    const i = S.drawPile.findIndex(u => { const k = cardByUid(S, u); return k && RESEARCH_CARDS.has(k.id); });
+                    if (i < 0)
+                        break;
+                    drawCard(S, S.drawPile.splice(i, 1)[0]);
+                } });
             }
             if (t.bankAll) {
                 notes.push(`持ち札の基礎+${t.bankAll}`);
@@ -2155,12 +2646,13 @@
                 r.consume = true;
         });
         const step = hasAb(x.S, 'growth_ab') ? 2 : 1;
+        const mulGrow = terms.some(t => t.grow && (t.grow.xm || t.grow.pm));
         const growOnce = S2 => { const R2 = (S2 || x.S).R; if (!R2)
-            return; R2.grew = R2.grew || {}; const ku = c.inst.uid; const lim = terms.some(t => t.growOnRetrig) ? 2 : 1; if ((R2.grew[ku] || 0) >= lim)
+            return; R2.grew = R2.grew || {}; const ku = c.inst.uid; const lim = mulGrow ? Infinity : terms.some(t => t.growOnRetrig) ? 2 : 1; if ((R2.grew[ku] || 0) >= lim)
             return; R2.grew[ku] = (R2.grew[ku] || 0) + 1; g.uses = (g.uses || 0) + step; };
         if (terms.some(t => t.growOnRetrig))
             r.always = (r.always || []).concat([growOnce]);
-        else if (terms.some(t => t.grow || t.growFunds))
+        else if (terms.some(t => t.grow || t.growFunds) && !(mulGrow && x.curRetrig))
             sides.push(growOnce);
         if (sides.length)
             r.side = S => sides.forEach(f => f(S));
@@ -2168,7 +2660,7 @@
             r.note = notes.join(' ');
         return r;
     }
-    function burnLegacy(S) {
+    function burnLegacy(S, up) {
         const sup = S.deck.find(c => CARD[c.id].alignment === '抑圧');
         if (!sup) {
             log(S, '焼くべき遺産は残っていなかった。');
@@ -2176,8 +2668,13 @@
         }
         removeCard(S, sup);
         const pool = D.cards.filter(c => c.alignment === '分権' && isAvailable(S, c.id));
-        for (let i = 0; i < 2; i++)
-            S.deck.push(mkCard(S, pick(pool).id));
+        const high = pool.filter(c => c.rarity === 'L' || c.rarity === 'X');
+        const sb = ((CARD[sup.id].base || 0) + (sup.g.bb || 0)) / 2;
+        for (let i = 0; i < 2; i++) {
+            const nc = mkCard(S, pick(up && i === 0 && high.length ? high : pool).id);
+            nc.g.bb = (nc.g.bb || 0) + sb;
+            S.deck.push(nc);
+        }
         S.stats.suppressBurned++;
         if (S.stats.suppressBurned >= 3)
             unlockCard(S, 'burn_legacy');
@@ -2209,7 +2706,7 @@
         log(S, `${r.name}から${name}が分かれた。`);
         chron(S, `${r.name}が分裂し${name}が生まれる`, '');
     }
-    function centralFactor(S) { return 0.8 + Ceff(S) * 0.008; }
+    function centralFactor(S) { return 0.7 * Math.pow(1.04, Ceff(S)); }
     function localFactor(S) {
         const t = owned(S, 'propaganda') ? Math.max(5, avgTrust(S)) : avgTrust(S);
         let f = 0.6 + t * 0.08;
@@ -2221,6 +2718,8 @@
         const d = ctx.d, def = c.def;
         if (d.rule === 'noLocal' && c.cat === 'local')
             return '地方のカードは無効';
+        if (c.cat === 'local' && owned(S, 'cx_blank'))
+            return '白紙委任で黙らされた';
         if (d.rule === 'noCentral' && c.cat === 'central')
             return '中央のカードは無効';
         if (S.charId === 'anarchist' && c.cat === 'central')
@@ -2244,11 +2743,13 @@
         return f;
     }
     const r2 = v => Math.round(v * 100) / 100;
+    const RETRIG_PER_CARD = 3;
     function scoreHand(S, uids, preview) {
         const R = S.R, d = R.d;
         const al = alive(S);
         const sumTrust = al.reduce((a, r) => a + r.trust, 0);
         const ctx = { S, R, d, preview: !!preview, Ce: Ceff(S), L: linksCount(S), lp: linkPower(S), alive: al, n: al.length, sumTrust, has: k => d.keys.includes(k), pMul: 1, M: 1, P: 0 };
+        uids = uids.filter(u => { const k = cardByUid(S, u); return k && cursePlayable(k.id); });
         ctx.cards = uids.map((u, i) => { const inst = cardByUid(S, u); const def = CARD[inst.id]; return { inst, def, cat: catOf(def), region: regionById(S, inst.region), i }; });
         ctx.centralCount = ctx.cards.filter(c => c.cat === 'central').length;
         ctx.localCount = ctx.cards.filter(c => c.cat === 'local').length;
@@ -2279,6 +2780,14 @@
         }
         const fc = centralFactor(S);
         const listeners = S.deck.map(k0 => { const d0 = CARD[k0.id]; const t0 = d0.fx && d0.fx.find(t => t.listen); return t0 ? { g: k0.g, v: t0.listen } : null; }).filter(Boolean);
+        if (R.firstPlay && uids.length) {
+            const nr = S.hand.filter(u => !uids.includes(u) && (cardByUid(S, u) || {}).id === 'curse_rot').length;
+            if (nr) {
+                const v = Math.pow(0.7, nr);
+                M *= v;
+                push({ kind: 'pre', name: '腐った梁', x: v });
+            }
+        }
         if (R.momentum) {
             M += R.momentum;
             push({ kind: 'pre', name: '余勢', a: R.momentum });
@@ -2300,7 +2809,7 @@
                 ctx.rtCount = ctx.rtCount || {};
                 const ku = c.inst.uid;
                 ctx.rtCount[ku] = (ctx.rtCount[ku] || 0) + 1;
-                if (ctx.rtCount[ku] > 2)
+                if (ctx.rtCount[ku] > RETRIG_PER_CARD)
                     return;
             }
             ctx.depth = (ctx.depth || 0) + (retrig ? 1 : 0);
@@ -2330,7 +2839,7 @@
             const amp = ctx.ampNext && !(def.fx || []).some(t => t.ampNext) ? ctx.ampNext : 0;
             if (amp)
                 ctx.ampNext = 0;
-            let terms0 = def.fx ? (lvOn ? upTerms(def, c.inst.lv) : def.fx) : null;
+            let terms0 = def.fx ? (d.rule === 'noUpgrade' ? def.fx : fxOf(S, c.inst)) : null;
             if (terms0 && amp)
                 terms0 = terms0.map(t => scaleTerm(t, amp));
             const r = Object.assign({}, terms0 ? runTerms(terms0, c, ctx, 1) : fx ? (fx(c, ctx) || {}) : {});
@@ -2352,7 +2861,7 @@
                 if (!terms0 || !terms0.some(t => t.p))
                     r.ampBase = amp;
             }
-            if (!def.fx && fx && lvOn) {
+            if (!def.fx && fx && lvOn && !LV_SELF.has(def.id)) {
                 const f = def.upRepeat ? 1 + 0.12 * c.inst.lv : 1.6;
                 if (r.p)
                     r.p *= f;
@@ -2364,7 +2873,7 @@
                     r.px = 1 + (r.px - 1) * (def.upRepeat ? f : 1.45);
             }
             const st = c.inst.stamp;
-            let p = (def.base || 0) + (c.inst.g.bb || 0) + (r.p || 0) + (rk2 === 'nishihara' ? 10 : 0) + (st === 'foundation' ? 30 : 0);
+            let p = (def.base || 0) * (d.rule === 'noUpgrade' ? 1 : baseMulOf(def.id, c.inst.lv || 0)) + (c.inst.g.bb || 0) + (r.p || 0) + (rk2 === 'nishihara' ? 10 : 0) + (st === 'foundation' ? 30 : 0);
             if (r.pm)
                 p *= r.pm;
             if (st === 'blue')
@@ -2379,20 +2888,22 @@
                 r.a = (r.a || 0) + 0.5 * ctx.cards.filter(q => q !== c && q.inst.region !== c.inst.region).length;
             if (st === 'old')
                 r.a = (r.a || 0) + 0.1 * Math.max(0, S.roundNo - (c.inst.stampedAt || S.roundNo));
-            if (rk2 === 'hokurei' && d.type === '自然')
-                p *= 1.3;
+            if (rk2 === 'hokurei' && S.stats.hkGone)
+                r.a = (r.a || 0) + 0.1 * S.stats.hkGone;
             if (rk2 === 'kawanaka')
                 r.a = (r.a || 0) + 0.2;
             if (def.growth === '固定値' && hasTrait(S, 'technocrat'))
                 p *= 1.25;
-            if (owned(S, 'standardize'))
-                p += 15 * ownedList(S, 'standardize').length;
-            if (d.type === '人災' && placed('redundancy') && def.id !== 'redundancy')
-                p *= 1.5;
-            if (RESEARCH_CARDS.has(def.id) && owned(S, 'lecture_notes'))
+            if (def.rarity === 'C' && S.charId === 'citizen')
                 p *= 2;
+            if (owned(S, 'standardize') && def.target.split(':')[0] === '全般')
+                p *= ownedUp(S, 'standardize') ? 1.8 : 1.5;
+            if (d.type === '人災' && placed('redundancy') && def.id !== 'redundancy')
+                p *= ctx.cards.some(q => q.def.id === 'redundancy' && (q.inst.lv || 0) > 0) ? 1.73 : 1.5;
+            if (RESEARCH_CARDS.has(def.id) && owned(S, 'lecture_notes'))
+                p *= ownedUp(S, 'lecture_notes') ? 2.5 : 2;
             if (def.id === 'bureaucracy' && owned(S, 'loyalty_oath'))
-                p *= 3;
+                p *= ownedUp(S, 'loyalty_oath') ? 3.9 : 3;
             let cat = c.cat;
             if (swap && cat !== 'neutral')
                 cat = cat === 'central' ? 'local' : 'central';
@@ -2403,6 +2914,8 @@
                     f *= 0.4;
                 if (d.rule === 'centralHalf')
                     f *= 0.5;
+                if (r.a > 0)
+                    r.a *= Math.sqrt(Math.max(1, f));
             }
             else if (cat === 'local') {
                 f = regionCardFactor(S, c.region);
@@ -2414,6 +2927,8 @@
                     f *= 0.8;
                 if (d.rule === 'localHalf')
                     f *= 0.5;
+                if (S.flags.dissolutionEra === S.era)
+                    f *= S.flags.dissolveMul || 1.5;
                 if (d.rule === 'regionLost')
                     f *= 0.5;
             }
@@ -2433,10 +2948,12 @@
                 P *= r.px;
             M += r.a || 0;
             if (r.xCurM) {
-                if (ctx.xCurDone)
+                const lim = (c.inst.lv || 0) > 0 ? 2 : 1;
+                ctx.xCurN = ctx.xCurN || 0;
+                if (ctx.xCurN >= lim)
                     r.x = r.x || 1;
                 else {
-                    ctx.xCurDone = true;
+                    ctx.xCurN++;
                     r.x = (r.x || 1) * Math.max(1, M);
                 }
             }
@@ -2488,10 +3005,12 @@
                 if (r.ampNext)
                     ctx.ampNext = r.ampNext;
                 if (r.retrigNext)
-                    ctx.retrigNext = true;
+                    ctx.retrigNext = (ctx.retrigNext || 0) + ((c.inst.lv || 0) > 0 && d.rule !== 'noUpgrade' ? 2 : 1);
             }
             fired.push({ c, p });
             ctx.firedRegions = (ctx.firedRegions || []).concat([c.inst.region]);
+            if (RESEARCH_CARDS.has(def.id))
+                ctx.firedResearch = (ctx.firedResearch || 0) + 1;
             if (r.endPowM)
                 ctx.endPowM = Math.max(ctx.endPowM || 1, r.endPowM);
             if (r.endPowP)
@@ -2507,47 +3026,47 @@
             if (!retrig && hasAb(S, 'encore_all') && (c.inst.lv || 0) > 0)
                 resolve(c, true);
             if (!retrig && ctx.retrigNext && !r.retrigNext) {
-                ctx.retrigNext = false;
-                resolve(c, true);
+                const n = ctx.retrigNext;
+                ctx.retrigNext = 0;
+                for (let q = 0; q < n; q++)
+                    resolve(c, true);
             }
             if (!retrig && st === 'twin')
                 resolve(c, true);
             if (!retrig && upMode(def) === 'self2' && (c.inst.lv || 0) > 0 && d.rule !== 'noUpgrade')
                 resolve(c, true);
-            const reps = upMode(def) === 'retrig2' && (c.inst.lv || 0) > 0 && d.rule !== 'noUpgrade' ? 2 : 1;
-            for (let rp = 0; rp < reps; rp++)
-                if (r.retrig && (ctx.depth || 0) < 3) {
-                    if (r.retrig === 'prev') {
-                        const pv = fired[fired.length - 2];
-                        if (pv)
-                            resolve(pv.c, true);
-                    }
-                    else if (r.retrig === 'sameRegion') {
-                        const o = ctx.cards.find(q => q !== c && q.inst.region === c.inst.region);
-                        if (o)
-                            resolve(o, true);
-                    }
-                    else if (r.retrig === 'allBefore')
-                        ctx.cards.filter(q => q.i < c.i).forEach(q => resolve(q, true));
-                    else if (r.retrig === 'best')
-                        endRetrig.push('best');
-                    else if (r.retrig === 'prev2') {
-                        const pv = fired[fired.length - 2];
-                        if (pv) {
-                            resolve(pv.c, true);
-                            resolve(pv.c, true);
-                        }
-                    }
-                    else if (r.retrig === 'allBefore2') {
-                        const bf = ctx.cards.filter(q => q.i < c.i);
-                        bf.forEach(q => resolve(q, true));
-                        bf.forEach(q => resolve(q, true));
-                    }
-                    else if (r.retrig === 'all')
-                        endRetrig.push('all');
-                    else if (r.retrig === 'hand')
-                        endRetrig.push('hand');
+            if (!retrig && RESEARCH_CARDS.has(def.id) && hasTrait(S, 'scholar'))
+                resolve(c, true);
+            if (r.retrig && (ctx.depth || 0) < 3) {
+                const twice = /2$/.test(r.retrig);
+                const times = (twice ? 2 : 1) + (upMode(def) === 'retrig2' && (c.inst.lv || 0) > 0 && d.rule !== 'noUpgrade' ? 1 : 0);
+                const kind = r.retrig.replace(/2$/, '');
+                const rep = q => { for (let t = 0; t < times; t++)
+                    resolve(q, true); };
+                if (kind === 'prev') {
+                    const pv = c.i >= 1 ? ctx.cards[c.i - 1] : null;
+                    if (pv)
+                        rep(pv);
                 }
+                else if (kind === 'prevResearch') {
+                    const pv = c.i >= 1 ? ctx.cards[c.i - 1] : null;
+                    if (pv && RESEARCH_CARDS.has(pv.def.id))
+                        rep(pv);
+                }
+                else if (kind === 'sameRegion') {
+                    const o = ctx.cards.find(q => q !== c && q.inst.region === c.inst.region);
+                    if (o)
+                        rep(o);
+                }
+                else if (kind === 'allBefore') {
+                    const bf = ctx.cards.filter(q => q.i < c.i);
+                    for (let t = 0; t < times; t++)
+                        bf.forEach(q => resolve(q, true));
+                }
+                else if (kind === 'best' || kind === 'all' || kind === 'hand')
+                    for (let t = 0; t < times; t++)
+                        endRetrig.push(kind);
+            }
         };
         if (hasAb(S, 'discard_voice') && (R.discardedUids || []).length && uids.length) {
             R.discardedUids.forEach((u, i) => { const inst = cardByUid(S, u); if (!inst)
@@ -2575,15 +3094,11 @@
                 push({ kind: 'glob', name: '中継所', note: 'すべてもう一度' });
                 ctx.cards.forEach(q => resolve(q, true));
             }
-            if (endRetrig.includes('best')) {
-                const best = fired.slice().sort((a, b) => b.p - a.p)[0];
-                if (best)
-                    resolve(best.c, true);
-            }
-            if (endRetrig.includes('all') || (hasAb(S, 'home_ground') && ctx.cards.length >= 2 && ctx.cards.every(q => q.inst.region === ctx.cards[0].inst.region))) {
-                push({ kind: 'glob', name: 'すべてもう一度', note: '' });
-                ctx.cards.forEach(q => resolve(q, true));
-            }
+            endRetrig.filter(k => k === 'best').forEach(() => { const best = fired.slice().sort((a, b) => b.p - a.p)[0]; if (best) {
+                push({ kind: 'glob', name: '二重署名', note: `「${best.c.def.name}」をもう一度` });
+                resolve(best.c, true);
+            } });
+            endRetrig.filter(k => k === 'all').forEach(() => { push({ kind: 'glob', name: 'すべてもう一度', note: '' }); ctx.cards.forEach(q => resolve(q, true)); });
             if (endRetrig.includes('hand')) {
                 const played = uids;
                 S.hand.filter(u => !played.includes(u)).forEach((u, i) => { const inst = cardByUid(S, u); if (!inst)
@@ -2623,12 +3138,10 @@
                 applyFac(f, h.onEnd(f, ctx));
         } });
         const gA = [];
-        if (S.flags.silentA)
-            gA.push(['静かな多数派', S.flags.silentA]);
         if (S.litTypes[d.type])
             gA.push(['文献調査', S.litTypes[d.type]]);
         if (owned(S, 'rev_calendar') && S.revolutions)
-            gA.push(['革命暦', 2 * S.revolutions * ownedList(S, 'rev_calendar').length]);
+            gA.push(['革命暦', S.revolutions * ownedList(S, 'rev_calendar').reduce((a, q) => a + ((q.lv || 0) > 0 ? 3.2 : 2), 0)]);
         if (S.flags.propA)
             gA.push(['プロパガンダ', S.flags.propA]);
         if (d.winter && ctx.L)
@@ -2641,10 +3154,17 @@
         const G = [];
         if (R.decl)
             G.push(['緊急事態宣言', 1 + R.declBonus]);
-        if (R.decl && R.backerDecl && owned(S, 'reverse_puppet'))
+        if (R.decl && R.backerDecl && owned(S, 'reverse_puppet')) {
             G.push(['操り返し', 1 + R.declBonus]);
+            if (ownedUp(S, 'reverse_puppet'))
+                G.push(['操り返し', 1 + R.declBonus]);
+        }
         if (S.permMult !== 1)
             G.push(['革命', S.permMult]);
+        if (S.flags.silentX && S.flags.silentX !== 1)
+            G.push(['静かな多数派', S.flags.silentX]);
+        if (S.flags.ventA)
+            gA.push(['腹話術', S.flags.ventA]);
         if (S.idleStack > 1 && uids.length)
             G.push(['怠惰の累積', S.idleStack]);
         if (hasTrait(S, 'veteran') && d.type === '社会')
@@ -2653,8 +3173,6 @@
             G.push(['手順書', 1.3]);
         if (S.returnPenalty > 0)
             G.push(['返還直後の混乱', 0.85]);
-        if (S.flags.dissolutionEra === S.era)
-            G.push(['解体令', 0.5]);
         if (S.charId === 'calamity') {
             if (!S.absorbed.length)
                 G.push(['まだ何も取り込んでいない', 0.6]);
@@ -2724,7 +3242,7 @@
         if (!R || R.done || R.backerPending || S.phase !== 'round')
             return null;
         const seen = new Set();
-        uids = uids.filter(u => S.hand.includes(u) && !seen.has(u) && seen.add(u)).slice(0, maxPlay(S));
+        uids = uids.filter(u => S.hand.includes(u) && !seen.has(u) && seen.add(u) && cursePlayable((cardByUid(S, u) || {}).id)).slice(0, maxPlay(S));
         R.lastPlayRegions = uids.map(u => (cardByUid(S, u) || {}).region);
         R.lastPlayUids = uids.slice();
         R.playedAll = (R.playedAll || []).concat(uids);
@@ -2774,9 +3292,9 @@
                 }
             }
             if (def.alignment === '集権')
-                changeC(S, 0.5 * sgn);
-            if (def.alignment === '抑圧') {
                 changeC(S, 1.5 * sgn);
+            if (def.alignment === '抑圧') {
+                changeC(S, 3 * sgn);
                 addU(S, 1.5);
             }
             if (S.charId === 'mirror' && def.alignment === '分権')
@@ -2808,7 +3326,7 @@
         const idleish = S.charId === 'idle' || owned(S, 'nap');
         if (!uids.length) {
             if (idleish) {
-                S.idleStack *= 1.5;
+                S.idleStack *= ownedUp(S, 'throne_dust') ? 1.75 : ownedUp(S, 'nap') ? 1.73 : 1.5;
                 log(S, '何もしなかった。玉座の上に時間が積もっていく。');
             }
             S.stats.idleStreak++;
@@ -2822,13 +3340,18 @@
         }
         S.hand = S.hand.filter(u => !uids.includes(u));
         S.stats.destroyed = (S.stats.destroyed || 0) + res.consume.length;
-        uids.forEach(u => { if (res.consume.includes(u))
+        uids.forEach(u => { if (res.consume.includes(u)) {
+            const ci = cardByUid(S, u);
+            if (ci)
+                departCard(S, ci);
             S.deck = S.deck.filter(c => c.uid !== u);
+        }
         else
             S.discard.push(u); });
         if (S.flags.pendingRevolution) {
+            const pm = S.flags.pendingRevolution === true ? 3 : S.flags.pendingRevolution;
             S.flags.pendingRevolution = false;
-            revolution(S, 3, '自ら起こした蜂起');
+            revolution(S, pm, '自ら起こした蜂起');
             if (S.over)
                 return res;
         }
@@ -2849,6 +3372,9 @@
                 emit(S, 'fire', 1, { cat: st.cat, rk: st.rk, rar: st.rar, typ: st.typ });
                 if (st.retrig)
                     emit(S, 'retrig');
+                const sk = cardByUid(S, st.uid);
+                if (sk && RESEARCH_CARDS.has(sk.id))
+                    S.stats.researchFired = (S.stats.researchFired || 0) + 1;
             }
             if (st.kind === 'fac')
                 emit(S, 'facFire');
@@ -2867,7 +3393,7 @@
                     S.discard = [];
                 }
                 if (S.drawPile.length)
-                    S.hand.push(S.drawPile.shift());
+                    drawCard(S, S.drawPile.shift());
             }
             R.extraDraw = 0;
         }
@@ -2879,11 +3405,19 @@
         const hp = rs.reduce((a, r) => a + (r.dead ? 0 : r.hp), 0), mx = rs.reduce((a, r) => a + r.max, 0);
         return dead >= Math.ceil(rs.length / 2) || hp <= mx * 0.3;
     }
-    function applyDamage(S, dmg) {
+    function maxDamage(S, d) {
+        if (d.boss || d.winter)
+            return alive(S).reduce((a, r) => a + r.hp, 0);
+        return alive(S).slice().sort((a, b) => b.hp - a.hp).slice(0, 3).reduce((a, r) => a + r.hp, 0);
+    }
+    function applyDamage(S, dmg, boss) {
         const before = S.regions.map(r => [r.hp, r.dead]);
         const hit = new Set();
+        const zone = boss ? alive(S) : shuffle(alive(S).slice()).slice(0, 3);
         for (let i = 0; i < dmg; i++) {
-            const al = alive(S);
+            let al = zone.filter(r => !r.dead);
+            if (!al.length)
+                al = alive(S);
             if (!al.length)
                 break;
             const r = pick(al);
@@ -2905,22 +3439,30 @@
                     r.hp = before[i][0];
                     r.dead = before[i][1];
                 } });
+                if ((pg.lv || 0) > 0 && !pg.g.pgUsed) {
+                    pg.g.pgUsed = true;
+                    log(S, '臨時政府が被害を引き受けた。まだ持ちこたえている。', 'good');
+                    chron(S, '臨時政府が壊滅を肩代わり', '');
+                    return;
+                }
                 removeCard(S, pg);
                 log(S, '臨時政府が被害を引き受け、そして解散した。', 'good');
                 chron(S, '臨時政府が壊滅を肩代わり', '');
                 return;
             }
             const hc = S.deck.find(c => c.id === 'homecoming');
-            if (hc && S.homeId != null) {
-                removeCard(S, hc);
+            if (hc && S.homeId != null && !S.flags.homecomingUsed) {
+                const hup = (hc.lv || 0) > 0;
+                S.flags.homecomingUsed = true;
+                S.deck.filter(c => c.id === 'homecoming').forEach(c => removeCard(S, c));
                 S.regions.forEach(r => { if (r.id === S.homeId) {
                     r.dead = false;
                     r.hp = r.max;
                 }
                 else {
                     r.dead = false;
-                    r.hp = 2;
-                    r.trust = 3;
+                    r.hp = hup ? 3 : 2;
+                    r.trust = hup ? 5 : 3;
                 } });
                 initRel(S, 0);
                 log(S, '国は崩れた。それでも故郷だけは立っていた。人々はそこから戻ってきた。', 'good');
@@ -2938,13 +3480,16 @@
         if (R.done)
             return;
         R.done = true;
+        curseRoundEnd(S);
         const ratio = R.total / R.req;
         let dmg = 0, rewardMul = 1;
         if (S.charId === 'gambler') {
             const p = clamp(0.5 * ratio, 0.05, 0.95);
             let win = Math.random() < p;
             if (!win && owned(S, 'loaded_dice') && !S.flags.diceUsed) {
-                S.flags.diceUsed = true;
+                S.flags.diceN = (S.flags.diceN || 0) + 1;
+                if (S.flags.diceN >= (ownedUp(S, 'loaded_dice') ? 2 : 1))
+                    S.flags.diceUsed = true;
                 win = Math.random() < p;
                 log(S, 'いかさまの賽が振り直された。');
             }
@@ -2963,19 +3508,17 @@
                 success = false;
                 S.stats.winStreak = 0;
                 S.betMult = 1;
-                dmg = Math.ceil((d.boss ? 9 : 5) * 2 * (1 - Math.min(ratio, 1) * 0.5));
+                dmg = Math.ceil(maxDamage(S, d) * 0.6 * (1 - Math.min(ratio, 1) * 0.5));
                 if (owned(S, 'house')) {
                     dmg = Math.ceil(dmg / 2);
-                    S.funds += 3;
+                    S.funds += ownedUp(S, 'house') ? 6 : 3;
                     log(S, '胴元は負けの一部を回収した。');
                 }
             }
         }
         else if (!success) {
             const s = 1 - clamp(ratio, 0, 1);
-            dmg = Math.ceil(s * (d.boss ? 12 : 7));
-            if (d.winter)
-                dmg = Math.ceil(s * 9);
+            dmg = Math.ceil(s * maxDamage(S, d));
         }
         R.success = success;
         S.flags.prevWin = !!success;
@@ -3003,7 +3546,7 @@
             else {
                 S.stats.damageTaken = (S.stats.damageTaken || 0) + dmg;
                 const deadBefore = S.regions.filter(q => q.dead).length;
-                applyDamage(S, dmg);
+                applyDamage(S, dmg, d.boss || d.winter);
                 emit(S, 'damage', dmg);
                 const nd = S.regions.filter(q => q.dead).length - deadBefore;
                 if (nd > 0)
@@ -3050,10 +3593,10 @@
                     unlockCard(S, 'resonance');
             }
             if (d.keys.includes('分離'))
-                ownedList(S, 'reconciliation').forEach(() => allTrust(S, 1));
+                ownedList(S, 'reconciliation').forEach(c => allTrust(S, (c.lv || 0) > 0 ? 2 : 1));
             if (owned(S, 'compound'))
-                S.carry += surplus * 1.15 * Math.min(2, ownedList(S, 'compound').length) * 0.5;
-            if (owned(S, 'razor_edge') && surplus <= R.req * 0.05) {
+                S.carry += surplus * 1.15 * (ownedUp(S, 'compound') ? 1 : Math.min(2, ownedList(S, 'compound').length) * 0.5);
+            if (owned(S, 'razor_edge') && surplus <= R.req * (ownedUp(S, 'razor_edge') ? 0.1 : 0.05)) {
                 S.carry += surplus * 10;
                 log(S, '紙一重で乗り切った。その余韻が次へ持ち越される。');
             }
@@ -3166,7 +3709,7 @@
                 k0.g.uses = (k0.g.uses || 0) + 1; });
         }
         if (S.endless && owned(S, 'propaganda'))
-            S.flags.propA = (S.flags.propA || 0) + 0.2;
+            S.flags.propA = (S.flags.propA || 0) + (ownedUp(S, 'propaganda') ? 0.32 : 0.2);
         S.returnPenalty = 0;
         S.lowerPlay = 0;
         S.prevDisaster = d;
@@ -3200,7 +3743,7 @@
             r.trust += 1; });
         if (!R.success) {
             allTrust(S, -1);
-            changeC(S, S.charId === 'mirror' ? -2 : 2);
+            changeC(S, S.charId === 'mirror' ? -4 : 4);
             log(S, '失敗のあと、首都に権限を集めろという声が強まった。', 'react');
         }
         if (Ce > 50)
@@ -3213,7 +3756,7 @@
         addU(S, alive(S).filter(r => r.trust <= 2).length * 0.5);
         if (!R.decl)
             addU(S, Ce < 25 ? -2 : (Ce < 50 ? -1 : 0));
-        ownedList(S, 'surveillance').forEach(() => addU(S, -5));
+        ownedList(S, 'surveillance').forEach(c => addU(S, (c.lv || 0) > 0 ? -8 : -5));
         if (!S.critical && ((S.U >= 70 && Ce >= 55) || S.U >= 92)) {
             S.critical = true;
             S.criticalRound = S.roundNo;
@@ -3244,7 +3787,7 @@
             if (Math.random() < p) {
                 if (owned(S, 'secret_police') && !S.flags.secretUsed) {
                     S.flags.secretUsed = true;
-                    S.flags.secretLeak = true;
+                    S.flags.secretLeak = !ownedUp(S, 'secret_police');
                     log(S, '夜のうちに、何人かが連行された。理由は公表されていない。', 'react');
                     chron(S, '秘密警察が未遂の陰謀を摘発', 'decl');
                 }
@@ -3255,11 +3798,13 @@
     }
     function eraEnd(S) {
         S.deck.forEach(c => { c.eras += 1; });
-        ownedList(S, 'muni_bond').forEach(() => { S.funds += alive(S).length; });
-        ownedList(S, 'standing_police').forEach(() => allTrust(S, -1));
+        curseEraEnd(S);
+        ownedList(S, 'muni_bond').forEach(c => { S.funds += alive(S).length * ((c.lv || 0) > 0 ? 2 : 1); });
+        ownedList(S, 'standing_police').forEach(c => { if (!(c.lv || 0))
+            allTrust(S, -1); });
         ownedList(S, 'surveillance').forEach(() => allTrust(S, -1));
         if (S.declEra === 0)
-            ownedList(S, 'silent_majority').forEach(() => { S.flags.silentA = (S.flags.silentA || 0) + 1; });
+            ownedList(S, 'silent_majority').forEach(q => { S.flags.silentX = (S.flags.silentX || 1) * ((q.lv || 0) > 0 ? 1.5 : 1.25); });
         if (hasAb(S, 'trust'))
             allTrust(S, 2);
         if (Ceff(S) > 60) {
@@ -3269,6 +3814,8 @@
         if (S.eraMaxC <= 0)
             S.meta.anarchyEra = true;
         S.flags.ccReady = true;
+        S.flags.ccUses = 0;
+        S.flags.diceN = 0;
         S.flags.secretUsed = false;
         S.flags.diceUsed = false;
         S.flags.pressUsed = false;
@@ -3304,28 +3851,34 @@
         saveMeta(S.meta);
     }
     function coup(S) {
+        if (owned(S, 'cx_iron')) {
+            log(S, '何かが起きかけた。だが、朝になると街は静まり返っていた。', 'react');
+            addCurse(S, '沈黙の代わりに');
+            return;
+        }
         if (S.charId === 'revolutionary')
             return revolution(S, 2, 'クーデターが起きた');
         return gameOver(S, 'coup');
     }
     function revolution(S, mult, why) {
         const al = shuffle(alive(S).slice());
-        const lose = Math.min(al.length - 1, 1 + rnd(2));
+        const lose = Math.min(al.length - 1, 2);
         const lost = al.slice(0, lose);
         lost.forEach(r => { r.dead = true; r.hp = 0; });
-        const keep = S.deck.filter(c => CARD_OWNER[c.id] === 'revolutionary' && c.id !== 'uprising');
+        const keep = S.deck.filter(c => (CARD_OWNER[c.id] === 'revolutionary' && c.id !== 'uprising') || isCurse(c.id) || isCx(c.id));
         S.deck = genDraft(S).slice(0, 8).map(id => mkCard(S, id)).concat(keep);
         S.permMult *= mult;
+        S.revolutions++;
         S.C = 20;
-        S.U = 10;
+        S.U = Math.min(90, 30 * S.revolutions);
         S.critical = false;
         S.countdown = null;
         S.criticalRound = null;
-        S.revolutions++;
         S.flags.afterRevolution = true;
         if (S.revolutions >= 2)
             unlockCard(S, 'rev_calendar');
         log(S, `${why}。${S.leader}は自ら首都の放送局に立った。旧い制度は一夜で消えた。`, 'boss');
+        log(S, S.revolutions >= 1 ? '革命が重なり、国は目に見えて疲れている。災いはこれまでより重くのしかかる。' : '国は革命の熱に浮かされている。この熱は、いずれ疲れに変わる。', 'react');
         chron(S, `革命。${lost.map(r => r.name).join('、')}を失う`, 'decl');
         S.drawPile = shuffle(S.deck.map(c => c.uid));
         S.hand = [];
@@ -3339,7 +3892,7 @@
         const c = S.deck[S.deck.length - 1];
         if (!c)
             return null;
-        return { id: c.id, rounds: c.rounds, eras: c.eras, g: c.g, lv: c.lv, keepGrowth: owned(S, 'future_memory') };
+        return { id: c.id, rounds: c.rounds, eras: c.eras, g: c.g, lv: c.lv, keepGrowth: owned(S, 'future_memory'), stamp: ownedUp(S, 'future_memory') ? c.stamp || null : null };
     }
     function finalizeMeta(S, kind) {
         const m = S.meta;
@@ -3368,8 +3921,6 @@
                 m.chars.mirror = true;
             if (BASIC.every(b => m.clears[b]))
                 m.chars.citizen = true;
-            if (Object.keys(m.clears).length >= 5)
-                m.chars.twins = true;
             D.cards.forEach(c => { if (c.unlock && c.unlock.character === S.charId && c.unlock.condition === `${CHAR[S.charId].name}で本編クリア`)
                 m.cards[c.id] = true; });
             if (S.charId === 'mediator' && S.declCount === 0)
@@ -3379,8 +3930,6 @@
         }
         if (kind === 'collapse') {
             const f = S.failNames;
-            if (f.length >= 2 && f[f.length - 1].name === f[f.length - 2].name && f[f.length - 1].roundNo - f[f.length - 2].roundNo === 1)
-                m.chars.timetraveler = true;
         }
         if (S.endless && S.era >= 10 && S.declCount >= 8)
             m.chars.heir = true;
@@ -3581,9 +4130,9 @@
     function luckOf(S) {
         let l = 0, ll = 0;
         S.deck.forEach(c => {
-            const d = CARD[c.id], k = 1 + 0.5 * (c.lv || 0);
-            if (d.fx)
-                d.fx.forEach(t => { if (t.luck)
+            const d = CARD[c.id], k = 1, tm = fxOf(S, c);
+            if (tm)
+                tm.forEach(t => { if (t.luck)
                     l += t.luck * k; if (t.legendLuck)
                     ll += t.legendLuck * k; if (t.luckAcc && c.g.accLuck)
                     l += c.g.accLuck * k; });
@@ -3597,10 +4146,15 @@
         return { l, ll };
     }
     const GROUP_W = { C: 50, U: 32, R: 16 };
-    function pickRarity(S, bonus) {
+    function rarityW(S, bonus) {
         const { l, ll } = luckOf(S);
         const L = l + (bonus || 0);
-        const w = { C: GROUP_W.C, U: GROUP_W.U, R: GROUP_W.R * (1 + 0.04 * L), L: 0.6 * (1 + L), X: 0.06 * Math.pow(1 + L + 2 * ll, 1.3) };
+        return { C: GROUP_W.C, U: GROUP_W.U, R: GROUP_W.R * (1 + 0.04 * L), L: 0.6 * (1 + L), X: 0.06 * Math.pow(1 + L + 2 * ll, 1.3) };
+    }
+    function rarityOdds(S) { const w = rarityW(S, 0); const t = Object.values(w).reduce((a, b) => a + b, 0); const o = {}; for (const k in w)
+        o[k] = w[k] / t; o.luck = luckOf(S).l; return o; }
+    function pickRarity(S, bonus) {
+        const w = rarityW(S, bonus);
         const tot = Object.values(w).reduce((a, b) => a + b, 0);
         let t = Math.random() * tot;
         for (const r of ['C', 'U', 'R', 'L', 'X']) {
@@ -3619,13 +4173,19 @@
             let pool = D.cards.filter(c => c.rarity === rar && isAvailable(S, c.id) && !out.includes(c.id) && !maxedOwned(S, c.id));
             if (!pool.length)
                 pool = D.cards.filter(c => c.rarity === 'C' && isAvailable(S, c.id));
-            const ws = pool.map(c => c.unlock ? 1.6 : 1);
+            const ws = pool.map(c => (c.unlock ? 1.6 : 1) * (hasTrait(S, 'scholar') && RESEARCH_CARDS.has(c.id) ? 4 : 1));
             let t = Math.random() * ws.reduce((a, b) => a + b, 0), k = 0;
             while (k < ws.length - 1 && t > ws[k]) {
                 t -= ws[k];
                 k++;
             }
             out.push(pool[k].id);
+        }
+        if (cxOpen(S)) {
+            const held = S.deck.filter(c => isCx(c.id)).map(c => c.id);
+            const pool = D.cards.filter(c => c.rarity === 'K' && !maxedOwned(S, c.id) && (new Set(held).size < CX_MAX || held.includes(c.id)));
+            if (pool.length && Math.random() < 0.3)
+                out[out.length - 1] = pick(pool).id;
         }
         see(S, out);
         return out.map(id => ({ id, price: priceOf(S, id), sold: false }));
@@ -3640,6 +4200,7 @@
         if (S.debt) {
             const pay = Math.min(S.funds, S.debt);
             S.funds -= pay;
+            spendNote(S, pay);
             if (pay < S.debt) {
                 allTrust(S, -1);
                 log(S, '借款を返しきれなかった。各地の信頼が落ちた。', 'bad');
@@ -3653,10 +4214,12 @@
         S.stampShop = genStampOffers(S);
         if (hasAb(S, 'intel'))
             S.P.reveal.push(`情報網の報告:次は${S.nextD.name}(${S.nextD.type})。`);
+        else if (ownedUp(S, 'expert_panel'))
+            S.P.reveal.push(`専門家委員会の見立て:次は${S.nextD.type}系の「${S.nextD.name}」が来る。`);
         else if (owned(S, 'expert_panel'))
             S.P.reveal.push(`専門家委員会の見立て:次は${S.nextD.type}系の災害が来る。`);
         if (owned(S, 'oracle') && S.nextD.boss)
-            S.P.reveal.push(`神託:次に来るのは${S.nextD.name}。`);
+            S.P.reveal.push(ownedUp(S, 'oracle') && S.nextD.restriction ? `神託:次に来るのは${S.nextD.name}。${S.nextD.restriction}。` : `神託:次に来るのは${S.nextD.name}。`);
         if (S.charId === 'prophet') {
             const t = Math.random() < 0.72 ? S.nextD.type : pick(TYPES.filter(x => x !== S.nextD.type));
             S.prophecy = t;
@@ -3680,7 +4243,7 @@
         emit(S, 'buy');
         return true;
     }
-    function maxLvOf(S, inst) { return CARD[inst.id] && CARD[inst.id].upRepeat ? 999 : 1; }
+    function maxLvOf(S, inst) { return !CARD[inst.id] || CARD[inst.id].noUp ? 0 : CARD[inst.id].upRepeat ? 999 : 1; }
     function maxLv(S) { return 1; }
     function upK(S, inst, regionKey) {
         const lv = inst.lv || 0;
@@ -3715,14 +4278,15 @@
         const c = mkCard(S, id);
         S.deck.push(c);
         log(S, `${who || ''}「${CARD[id].name}」を承認した。`);
+        if (isCx(id))
+            gainCx(S, c, false);
         return c;
     }
-    function sellValue(S, inst) { return fib(S.stats.removals || 0); }
+    function sellValue(S, inst) { return fib((S.stats.removals || 0) + (inst && isCurse(inst.id) ? 1 : 0)); }
+    function sellable(S, inst) { return !!inst && !isSeed(inst.id) && S.deck.length > 5; }
     function sell(S, uid) {
-        if (S.deck.length <= 5)
-            return false;
         const c = cardByUid(S, uid);
-        if (!c)
+        if (!sellable(S, c))
             return false;
         const cost = sellValue(S, c);
         if (S.funds < cost)
@@ -3757,6 +4321,7 @@
         S.P.rr.c++;
         S.P.rerollCost = 2 * fib(S.P.rr.c);
         S.shop = genOffers(S);
+        emit(S, 'reroll', 1, { kind: 'card' });
         return true;
     }
     const MAX_LV = 5;
@@ -3764,15 +4329,16 @@
     function upgradeCost(S, inst) { return Math.max(1, 4 + 3 * (inst.lv || 0) - (hasAb(S, 'workshop') ? 2 : 0) - 2 * facCount(S, 'forge')); }
     function upgrade(S, uid) {
         const c = cardByUid(S, uid);
-        if (!c || (c.lv || 0) >= MAX_LV)
+        if (!c || (!CARD[c.id].evolve && (c.lv || 0) >= Math.min(MAX_LV, maxLvOf(S, c))))
             return false;
         const cost = upgradeCost(S, c);
         if (S.funds < cost)
             return false;
+        const nm = CARD[c.id].name;
         S.funds -= cost;
         spendNote(S, cost);
-        c.lv = (c.lv || 0) + 1;
-        log(S, `「${CARD[c.id].name}」を強化した。`);
+        lvUp(S, c, 1);
+        log(S, `「${nm}」を強化した。`);
         return true;
     }
     function returnCost(S) { return 2 * fib(S.stats.returns || 0); }
@@ -3830,7 +4396,7 @@
         }
     }
     const tr = (r, d) => { r.trust = Math.max(0, r.trust + d); };
-    const pay = (S, n) => { S.funds = Math.max(0, S.funds - n); };
+    const pay = (S, n) => { const v = Math.min(S.funds, n); S.funds -= v; spendNote(S, v); };
     const EVENTS = [
         { id: 'harvest', tier: 0, title: '収穫祭の招待', text: '{r}から収穫祭への招待状が届いた。',
             choices: [{ label: '出席する', fx: (S, r) => { pay(S, 1); tr(r, 1); }, react: '{r}の人々は、指導者が来たことを喜んだ。' },
@@ -3912,7 +4478,7 @@
             S.stats.omensSeen++;
             emit(S, 'omen');
             const kind = S.chron.some(c => c.kind === 'omen1') ? 'omen' : 'omen1';
-            if (owned(S, 'censorship') || S.flags.blackoutAfter) {
+            if ((owned(S, 'censorship') && !ownedUp(S, 'censorship')) || S.flags.blackoutAfter) {
                 ev.choices[ev.choices.length - 1].fx(S, r);
                 chron(S, `${ev.title}(報告は上がらなかった)`, kind);
                 return null;
@@ -3959,11 +4525,15 @@
         Object.keys(S).forEach(k => { delete S[k]; });
         Object.assign(S, restored);
         S.meta = meta;
-        S.flags.revisionUsed = true;
         const rv = S.deck.find(c => c.id === 'revision');
-        if (rv) {
-            removeCard(S, rv);
-            drawTo(S);
+        if (rv && (rv.lv || 0) > 0 && !rv.g.revOnce)
+            rv.g.revOnce = true;
+        else {
+            S.flags.revisionUsed = true;
+            if (rv) {
+                removeCard(S, rv);
+                drawTo(S);
+            }
         }
         S.snapshot = null;
         log(S, 'このラウンドの始まりに立ち戻っていた。', 'sys');
@@ -4047,18 +4617,44 @@
         if (d.evolve && CARD[d.evolve])
             return `強化すると「${CARD[d.evolve].name}」に化ける`;
         const m = upMode(d);
-        if (d.upRepeat)
-            return `何度でも重ねて強化でき、そのたびに少しずつ伸びる${lv ? `(いま${lv}回)` : ''}。次は:${upText(d.effect, lv + 1, true, !d.fx)}`;
+        if (d.upRepeat) {
+            const nx = upText(d.effect, lv + 1, true, !d.fx);
+            return `何度でも重ねて強化でき、強化するたびに基礎が${d.base}ずつ積み上がる${lv ? `(いま${lv}回、基礎${d.base * (1 + lv)})` : ''}。次は基礎${d.base * (2 + lv)}${nx !== d.effect ? `、効果は:${nx}` : ''}`;
+        }
+        if (d.noUp)
+            return isCurse(id) ? '禍根は強化できない。何枚でも重なる' : '強化できない';
         if (lv)
-            return '強化済み';
+            return '強化済み' + (baseMulOf(id, lv) !== 1 ? `(基礎×${baseMulOf(id, lv)})` : '');
+        if (m === 'alt') {
+            const a = UPALT[id];
+            return '強化すると:' + (a.text || d.effect) + (a.base ? `。基礎が${a.base}倍になる` : '') + (isCx(id) ? '。強化するとき、禍根が1枚入る' : '');
+        }
         if (m === 'retrig2')
-            return '強化すると、もう一度発動させる回数が2回になる';
+            return '強化すると:' + retrigText(d.effect);
         if (m === 'self2')
-            return '強化すると、このカードは出すたびにもう一度発動する';
+            return '強化すると、このカードは出すたびに2回発動する(基礎も効果も2回分)';
         return '強化すると:' + upText(d.effect, 1, false, !d.fx);
     }
-    function effectAtLv(id, lv) { const d = CARD[id]; if (!lv || upMode(d) !== 'num')
-        return effectText(id); return upText(effectText(id), lv, !!d.upRepeat, !d.fx); }
+    function effectAtLv(id, lv) {
+        const d = CARD[id];
+        if (!lv)
+            return effectText(id);
+        const m = upMode(d);
+        if (m === 'alt')
+            return UPALT[id].text || effectText(id);
+        if (m === 'retrig2')
+            return retrigText(effectText(id));
+        if (m === 'self2')
+            return effectText(id) + '(出すたびに2回発動する)';
+        if (m !== 'num')
+            return effectText(id);
+        return upText(effectText(id), lv, !!d.upRepeat, !d.fx);
+    }
+    function retrigText(t) {
+        if (/2回もう一度発動/.test(t))
+            return t.replace('2回もう一度発動', '3回もう一度発動');
+        return t.replace('もう一度発動', '2回もう一度発動');
+    }
     function devSet(S, key, v) {
         v = Number(v);
         if (!isFinite(v))
@@ -4171,13 +4767,14 @@
     }
     root.Engine = {
         D, CARD, CHAR, CARD_OWNER, PRICE, RARITY_NAME, TYPES, BASIC, ABILITIES, FLAVOR, MAX_LV,
-        effectText, catOf, randomNames,
+        effectText, catOf, randomNames, isCx, isCurse, isSeed, cxOpen, cursePlayable, sellable, addCurse, curseWeights, eraEnd, coup,
         loadMeta, saveMeta, defaultMeta, charUnlocked, cardUnlocked, saveRun, loadRun, hasSavedRun, clearRun,
         newRun, confirmDraft, startRound, declare, canDeclare, discard, execute, scoreHand, backerChoice, maxPlay, handLimit,
         enterParliament, buy, sell, sellValue, reroll, upgrade, upgradeCost, returnCost, returnPower, leaveParliament, nextFromResult,
         pickReward, skipReward, rerollReward, rerollRewardCost, resolveEvent, continueEndless, alive, cardByUid, regionById,
         windowStage, useRevision, canRevise, twinSwap, roundLabel, Ceff, owned, hasAb,
         FAC, STAMP, luckOf, maxedOwned, stampPrice, effectAtLv, upMode, insight, upgradeNote, upK, maxDiscard, buyOffer, offerCost, OFFER_CAP, SLOT_CAP, maxLvOf, buyStamp, cancelStamp, applyStamp, rerollStamps, rerollFacilities, mergeTarget, RG, LINK_AT, REL_MIN, REL_MAX, getRel, linksCount, alivePairs, buyFacility, sellFacility, buySlot, slotCost, MAX_SLOTS, facPrice, SLOT_CAP_: 8,
+        fxOf, extraBase, charProfile, RESEARCH_CARDS, INFO_CARDS, declBonusOf, maxPlayNote, offerNote, baseMulOf, ownedUp, growExp, rarityOdds, RETRIG_PER_CARD,
         devSet, devDisaster, devJump, devAddCard, devAddFacility, devAddAbility, devAction, devInfo, reqFor
     };
 })(typeof window !== 'undefined' ? window : globalThis);
