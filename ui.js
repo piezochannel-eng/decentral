@@ -1,7 +1,7 @@
 (function () {
     'use strict';
     const E = window.Engine;
-    const { CARD, CHAR, ABILITIES } = E;
+    const { CARD, CHAR } = E;
     const $ = s => document.querySelector(s);
     const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
     const fmt = n => bigFmt(n);
@@ -185,9 +185,25 @@
         }
         if (inst.id === 'cx_bookburn' && inst.g.burned)
             return { short: `焼${inst.g.burned}`, full: `これまでに焼いた研究系のカード ${inst.g.burned}枚`, frac: null };
+        if (inst.id === 'cx_massacre') {
+            const v = inst.g.acc || 0;
+            return { short: `蓄${v}`, full: `蓄積 ${v}`, frac: null };
+        }
+        if (inst.id === 'cx_taxdodge') {
+            const v = inst.g.spent || 0;
+            return { short: `数${v}`, full: `数えた議会資金 ${v}${inst.g.taxRound === (S && S.roundNo) ? '(このラウンドは回収済み)' : ''}`, frac: null };
+        }
+        if (inst.id === 'cx_memorial' && S && S.flags.memDmg) {
+            const v = S.flags.memDmg;
+            return { short: `刻${v}`, full: `刻まれた被害 ${v}`, frac: null };
+        }
         if (inst.id === 'curse_collateral') {
             const n = inst.g.drawn || 0;
             return { short: `期限${3 - n}`, full: `出さずにあと${3 - n}回引くと地方を失う`, frac: n / 3 };
+        }
+        if (E.isCurse(inst.id) && inst.g.origin) {
+            const o = inst.g.origin;
+            return { short: '来歴', full: `${o.when}、${o.cause}ときに入った`, frac: null };
         }
         const fx = E.fxOf(S, inst) || d.fx;
         const wt = fx.find(t => t.watch);
@@ -340,7 +356,11 @@
     function closeModal() { const m = $('#modal'); if (m) {
         m.className = 'modal';
         m.innerHTML = '';
-    } ui.modal = null; ui.lastModalKey = null; }
+    } ui.modal = null; ui.lastModalKey = null; if (BGS.preview) {
+        BGS.preview = false;
+        if (ui.view === 'title')
+            useTitlePal(titlePalKey());
+    } }
     function splashMap() {
         const pts = [[20, 30], [42, 18], [70, 26], [84, 52], [66, 78], [36, 74], [14, 58], [50, 48]];
         const ls = [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 0], [7, 1], [7, 4], [7, 6], [2, 7]];
@@ -363,14 +383,18 @@
         $('#app').innerHTML = `<div class="splash retro" id="splash">
     <div class="dither"></div>
     <div class="splash-inner" id="splash-inner">
-      <div class="tm-kicker">分権国家ローグライト</div>
       <h1 class="titlemark" aria-label="${esc(GAME_TITLE)}">${titleMark(false)}</h1>
-      <div class="tm-sub">${esc(GAME_SUB)}</div>
       <nav class="rmenu">${menu}</nav>
       <div class="splash-foot">最高到達 第${meta.best.era || 1}時代 ・ 最高スコア ${fmt(meta.best.score || 0)}${meta.sandbox ? ' ・ サンドボックス' : ''}</div>
     </div>
+    ${bgMode() === 'map' ? `<div class="parch"><div class="engr-box"><div class="engr-l" id="engrA"></div><div class="engr-l" id="engrB"></div><div class="engr-l engr-ghost" id="engrG"></div>
+      <div class="engr-night" id="engrN"></div>${ENGR_LAMPS.map((l, i) => `<i class="engr-lamp k-${l.k}" style="left:${l.x}%;top:${l.y}%;--s:${Math.max(0.35, Math.min(1.6, 14 / l.d)).toFixed(2)};animation-delay:${-(i * 0.73).toFixed(2)}s"></i>`).join('')}
+      <div class="engr-fog f1"></div><div class="engr-fog f2"></div></div><div class="parch-tint"></div><div class="parch-wash"></div></div>` : ''}
+    <button class="bg-switch" data-act="bgswitch" title="背景を切り替える">${bgMode() === 'map' ? '版画' : 'うねり'}</button>
     <div class="crt-on"></div>
   </div><div id="modal" class="modal"></div>`;
+        applyTitleColors(BGS.titleKey || titlePalKey());
+        engrStart();
     }
     function renderName() {
         setTimeout(() => { ui.fx.rolled = false; }, 0);
@@ -382,6 +406,8 @@
       <label>指導者の名前<input id="in-leader" class="${ui.fx.rolled ? 'rolling' : ''}" maxlength="16" value="${esc(ui.names.leader)}"></label>
       <button class="randname" data-act="randname"><span class="dice"></span>国と指導者の名前をおまかせで決め直す</button>
       <div class="hint">入力欄に、好きな名前を書いてもよい。</div>
+      <label class="seedrow">種<input id="in-seed" maxlength="24" placeholder="空欄ならおまかせ" value="${esc(ui.seed || '')}"></label>
+      <div class="hint">同じ種と同じ人物で始めると、同じ展開になる。</div>
       <div class="diff"><span>難易度</span>${Object.keys(DIFF).map(k => `<label><input type="radio" name="diff" data-act="diff" value="${k}" ${ui.diff === k ? 'checked' : ''}>${k}</label>`).join('')}</div>
     </div>
     <div class="nav"><button data-act="totitle">戻る</button><button class="primary" data-act="tochars">次へ</button></div>
@@ -393,11 +419,13 @@
             ui.names.nation = n.value.trim().slice(0, 16);
         if (l && l.value.trim())
             ui.names.leader = l.value.trim().slice(0, 16);
+        const sd = $('#in-seed');
+        if (sd)
+            ui.seed = sd.value.trim().slice(0, 24);
     }
     function charDetailHTML(id) {
         const c = CHAR[id], p = E.charProfile(id);
-        const it = p.twins ? [['始まり', '二人の人物の性質を合わせ持つ。どの二人かは就任するまで分からない']]
-            : [['最初の制度', p.draft ? `${p.draft}枚を選ぶ` : '前の時間から1枚を持ち越す'], ['集権度', p.C], ['議会資金', p.funds], ['地方の信頼', p.trust + (p.home ? '(故郷は9)' : '')]];
+        const it = [['最初の制度', `${p.draft}枚を選ぶ`], ['集権度', p.C], ['議会資金', p.funds], ['地方の信頼', p.trust + (p.home ? '(故郷は9)' : '')]];
         return `<div class="ch-detail"><div class="cd-name">${esc(c.name)}</div><div class="cd-flavor">${esc(E.FLAVOR[id])}</div>
     <dl class="cd-stats">${it.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('')}</dl></div>`;
     }
@@ -484,8 +512,34 @@
         }
         catch (e) { }
     }
+    function updateAir() {
+        if (!document.getElementById || !document.body || !document.body.appendChild)
+            return;
+        let el = document.getElementById('air');
+        if (!el) {
+            el = document.createElement('div');
+            el.id = 'air';
+            document.body.appendChild(el);
+        }
+        const inRun = S && !['title', 'name', 'chars'].includes(ui.view) && !['over', 'clear'].includes(S.phase);
+        const t = inRun ? Math.pow(Math.min(1, Math.max(0, ((S.U || 0) - 15) / 75)), 1.3) : 0;
+        const f = t > 0.01 ? `saturate(${(1 - 0.62 * t).toFixed(3)}) sepia(${(0.2 * t).toFixed(3)}) brightness(${(1 - 0.1 * t).toFixed(3)}) contrast(${(1 - 0.07 * t).toFixed(3)})` : 'none';
+        if (el.style && el.dataset && el.dataset.f !== f) {
+            el.dataset.f = f;
+            el.style.backdropFilter = f;
+            el.style.webkitBackdropFilter = f;
+        }
+        try {
+            bgmAir(t);
+        }
+        catch (e) { }
+    }
     function render() {
         setTimeout(showCx, 30);
+        try {
+            updateAir();
+        }
+        catch (e) { }
         try {
             bgmUpdate();
         }
@@ -519,6 +573,7 @@
         const stage = E.windowStage(S);
         const C = Math.round(S.C);
         let center = '';
+        ui.turnHTML = '';
         if (S.phase === 'draft')
             center = renderDraft();
         else if (S.phase === 'parliament')
@@ -540,8 +595,8 @@
   <main class="grid ${S.phase !== ui.prevPhaseForEnter ? 'enter' : ''}">
     <aside class="side">${renderSide()}</aside>
     <section class="center">${center}</section>
-    <section class="logcol"><div id="log" class="log stage${stage}">${S.log.slice(-90).map(l => `<p class="${l.cls}">${esc(l.text)}</p>`).join('')}</div></section>
-  </main><div id="modal" class="modal"></div>${transitionHTML()}${(S.phase === 'over' || S.phase === 'clear') && ui.endPeek ? '<div class="peekbar"><button class="primary" data-act="unpeek">結末に戻る</button></div>' : ''}`;
+    <section class="logcol ${ui.turnHTML ? 'has-turn' : ''}"><div id="log" class="log stage${stage}">${S.log.slice(-90).map(l => `<p class="${l.cls}">${esc(l.text)}</p>`).join('')}</div></section>
+  </main>${ui.turnHTML || ''}<div id="modal" class="modal"></div>${transitionHTML()}${(S.phase === 'over' || S.phase === 'clear') && ui.endPeek ? '<div class="peekbar"><button class="primary" data-act="unpeek">結末に戻る</button></div>' : ''}`;
         setBackground();
         const lg = $('#log');
         if (lg)
@@ -607,12 +662,20 @@
         }).join('');
         ui.prevHand = S.hand.slice();
         const pv = canAct && ui.sel.length ? E.scoreHand(S, ui.sel, true) : null;
+        const ok = pv && ui.sel.length <= mp && !selBad;
+        ui.turnHTML = `<div class="turnpanel">
+    <div class="tp-pv ${ok ? 'on' : ''}">${ok ? `<div class="tp-k">見込み</div><div class="tp-calc"><b>${fmt(pv.P)}</b><span>×</span><b>${pv.M}</b></div><div class="tp-sum"><span>=</span><b>${fmt(pv.score)}</b></div>${R.req > R.total ? `<div class="tp-need">あと ${fmt(Math.max(0, R.req - R.total))}</div>` : ''}` : `<div class="tp-k">見込み</div><div class="tp-hint" title="${esc(E.maxPlayNote(S))}">出すのは${mp}枚まで(${esc(E.maxPlayNote(S))})。引き直しは${E.maxDiscard(S)}枚まで。選んだ順に発動する</div>`}</div>
+    <button class="primary" data-act="exec" ${canAct && ui.sel.length <= mp && !selBad ? '' : 'disabled'}>${selBad ? '出せないカードが混ざっている' : ui.sel.length > mp ? `出せるのは${mp}枚まで` : ui.sel.length ? `${ui.sel.length}枚を出す` : '何もせず手番を終える'}</button>
+    <button data-act="discard" ${canAct && R.discardsLeft > 0 && ui.sel.length && ui.sel.length <= E.maxDiscard(S) ? '' : 'disabled'}>${ui.sel.length > E.maxDiscard(S) ? `引き直せるのは${E.maxDiscard(S)}枚まで` : `引き直す(残り${R.discardsLeft})`}</button>
+    ${S.charId === 'puppet' ? '' : `<button class="decl" data-act="declare" ${E.canDeclare(S) && canAct ? '' : 'disabled'}>${R.decl ? `宣言中 倍率×${r2u(1 + R.declBonus)}` : `緊急事態宣言 倍率×${r2u(1 + E.declBonusOf(S))}`}</button>`}
+    <div class="tp-deck">山札 ${S.drawPile.length}</div>
+  </div>`;
         let table = '<div class="table-empty">手札からカードを選んで出す</div>';
         const last = A ? A.play : ui.lastPlay;
         const done = !A && (S.phase === 'result' || S.phase === 'winter');
         const banner = done ? `<div class="result-banner ${R.success ? 'ok' : 'ng'}"><div class="rb-t">${R.success ? '乗り切った' : '抑えきれなかった'}</div>
     <div class="rb-n">${esc(d.name)} ・ 対策値 ${fmt(R.total)} / ${fmt(R.req)}${R.coin ? ` ・ コインは${R.coin}` : ''}${R.dmg ? ` ・ <span class="bad">被害 ${R.dmg}</span>` : ''} ・ 議会資金 +${R.income || 0}</div>
-    <div class="rb-b"><button data-act="roundlog">このラウンドの手を見る</button>${E.canRevise(S) ? '<button data-act="revise">修正する</button>' : ''}<button class="primary" data-act="next">${S.phase === 'winter' ? '冬は続く' : S.pendingReward ? '報酬へ' : '議会へ'}</button></div></div>` : '';
+    <div class="rb-b"><button data-act="roundlog">このラウンドの手を見る</button><button class="primary" data-act="next">${S.phase === 'winter' ? '冬は続く' : S.pendingReward ? '報酬へ' : '議会へ'}</button></div></div>` : '';
         if (last) {
             const cards = last.ids.map((id, i) => `<div class="tcard ${A ? 'fly' : ''}" id="tc-${last.uids[i]}" style="animation-delay:${i * 90}ms">${cardHTML(id, { lv: last.lvs[i], region: last.regions[i] })}</div>`).join('');
             const r = last.res;
@@ -624,20 +687,14 @@
   <div class="disaster ${d.boss ? 'boss' : ''} ${d.winter ? 'winter' : ''} ${fx.shake ? 'shake' : ''} ${fx.cleared ? 'cleared' : ''} ${fx.newRound ? 'arrive' : ''}">
     <div class="d-head"><span class="d-name">${esc(d.name)}</span><span class="d-type">${esc(d.type)}${d.boss ? ' ・ ボス' : ''}</span></div>
     ${d.boss && d.restriction ? `<div class="d-rule">${esc(d.restriction)}</div>` : ''}
+    ${S.returnPenalty > 0 ? `<div class="d-rule">返還直後の混乱:このラウンドの手はすべて倍率×0.85</div>` : ''}
     <div class="d-bar"><div id="dbar" style="width:${pctFrom}%" ${fx.tally ? `data-to="${pct}"` : ''}></div></div>
     <div class="d-nums"><span>対策値 <b id="dtotal" ${fx.tally ? `data-to="${Math.round(R.total)}"` : ''}>${fmt(shownTotal)}</b> / ${fmt(R.req)}</span><span class="pips">手番 ${pips(R.playsLeft, R.playsLeft + R.playsUsed)}<span class="sep"></span>引き直し ${pips(R.discardsLeft, R.discardsLeft + R.discardsUsed)}</span></div>
   </div>
   ${renderFacBar()}
   ${banner}
   <div class="table" id="table">${table}</div>
-  <div class="actions">
-    <div class="pv">${pv && ui.sel.length <= mp ? `見込み <b>${fmt(pv.P)}</b> × <b>${pv.M}</b> = <b class="big">${fmt(pv.score)}</b>` : `<span class="dim" title="${esc(E.maxPlayNote(S))}">出すのは${mp}枚まで(${esc(E.maxPlayNote(S))})、引き直しは${E.maxDiscard(S)}枚まで。選んだ順に発動する</span>`}</div>
-    <button class="primary" data-act="exec" ${canAct && ui.sel.length <= mp && !selBad ? '' : 'disabled'}>${selBad ? '出せないカードが混ざっている' : ui.sel.length > mp ? `出せるのは${mp}枚まで` : ui.sel.length ? `${ui.sel.length}枚を出す` : '何もせず手番を終える'}</button>
-    <button data-act="discard" ${canAct && R.discardsLeft > 0 && ui.sel.length && ui.sel.length <= E.maxDiscard(S) ? '' : 'disabled'}>${ui.sel.length > E.maxDiscard(S) ? `引き直せるのは${E.maxDiscard(S)}枚まで` : '引き直す'}</button>
-    ${S.charId === 'puppet' ? '' : `<button class="decl" data-act="declare" ${E.canDeclare(S) && canAct ? '' : 'disabled'}>${R.decl ? `宣言中 倍率×${r2u(1 + R.declBonus)}` : `緊急事態宣言 倍率×${r2u(1 + E.declBonusOf(S))}`}</button>`}
-  </div>
   <div class="hand-fan ${A ? 'busy' : ''} ${ui.sel.length ? 'has-sel' : ''}">${hand || '<div class="empty">手札がない</div>'}</div>
-  <div class="deckinfo">山札 ${S.drawPile.length}</div>
   ${fx.stamp ? `<div class="emerg"><div class="em-flash"></div><div class="em-band top"></div><div class="em-band bot"></div><div class="em-core"><div class="em-kicker">STATE OF EMERGENCY</div><div class="em-title">緊急事態宣言</div><div class="em-sub">このラウンドの倍率 ×${r2u(1 + (R.declBonus || 0))}</div></div><div class="em-scan"></div></div>` : ''}`;
     }
     function pips(left, total) { return Array.from({ length: Math.max(total, left) }, (_, i) => `<i class="${i < left ? 'on' : ''}"></i>`).join(''); }
@@ -808,8 +865,6 @@
                 return `<div class="reward fc" style="animation-delay:${i * 120}ms" data-act="reward" data-i="${i}"><div class="rw-kind">施設${S.facilities.length >= S.facSlots ? '(用地も一つ広がる)' : ''}</div>${facHTML(o.id, {})}</div>`;
             if (o.stamp)
                 return `<div class="reward cd" style="animation-delay:${i * 120}ms" data-act="reward" data-i="${i}"><div class="rw-kind">${E.STAMP[o.stamp].name}付きの${E.RARITY_NAME[CARD[o.id].rarity]}</div>${cardHTML(o.id, { stamp: o.stamp })}</div>`;
-            if (o.kind === 'ability')
-                return `<div class="reward ab" style="animation-delay:${i * 120}ms" data-act="reward" data-i="${i}"><div class="rw-kind">能力</div><div class="rw-name">${esc(ABILITIES[o.id].name)}</div><div class="rw-text">${esc(ABILITIES[o.id].text)}</div></div>`;
             return `<div class="reward cd" style="animation-delay:${i * 120}ms" data-act="reward" data-i="${i}"><div class="rw-kind">${E.RARITY_NAME[CARD[o.id].rarity]}のカード</div>${cardHTML(o.id)}</div>`;
         }).join('');
         return `<div class="phase-head"><h2 class="s-title">${esc(S.prevDisaster ? S.prevDisaster.name : 'ボス')}を越えた</h2><p>ひとつを選ぶ。</p></div>
@@ -864,7 +919,7 @@
     <div class="ptabs">${tabs}</div>
     <section class="shopsec pbody">${body}</section>
     <div class="actions pbar">
-      <button data-act="return" ${S.funds >= E.returnCost(S) && E.Ceff(S) > 0 ? '' : 'disabled'}>権限を地方に返す ${E.returnCost(S)}</button>
+      <button data-act="return" title="集権度-4、不穏度-2。次のラウンドの手はすべて倍率×0.85(何度返しても×0.85)" ${S.funds >= E.returnCost(S) && E.Ceff(S) > 0 ? '' : 'disabled'}>権限を地方に返す ${E.returnCost(S)}${S.returnPenalty > 0 ? '(次のラウンド×0.85)' : ''}</button>
       <button data-act="buyoffer" ${(S.offerPlus || 0) < E.OFFER_CAP && S.funds >= E.offerCost(S) ? '' : 'disabled'}>${(S.offerPlus || 0) < E.OFFER_CAP ? `対策案の枠を増やす ${E.offerCost(S)}` : '対策案の枠は最大'}</button>
       <button data-act="buyslot" ${S.facSlots < E.SLOT_CAP && S.funds >= E.slotCost(S) ? '' : 'disabled'}>${S.facSlots < E.SLOT_CAP ? `用地を広げる ${E.slotCost(S)}` : '用地は最大'}</button>
       <button class="primary" data-act="leave" ${S.event && !S.event.resolved ? 'disabled' : ''}>議会を閉じる</button>
@@ -921,16 +976,50 @@
     }
     function zukanList() {
         const f = ui.zukan || (ui.zukan = { region: '', rarity: '', q: '' });
-        const list = E.D.cards.filter(c => (!f.region || c.region === f.region) && (!f.rarity || c.rarity === f.rarity) && (!f.q || ((meta.sandbox || (meta.seen || {})[c.id]) && (c.name + c.effect).includes(f.q))));
+        const list = zukanOrder().filter(c => (!f.region || c.region === f.region) && (!f.rarity || c.rarity === f.rarity) && (!f.q || ((meta.sandbox || (meta.seen || {})[c.id]) && (c.name + c.effect).includes(f.q))));
         const seen = meta.seen || {};
+        let lastG = null;
         const cards = list.map(c => {
+            const g = zukanGroup(c), head = g.key !== lastG ? `<div class="zhead">${esc(g.label)}</div>` : '';
+            lastG = g.key;
+            return head + zukanItem(c);
+        }).join('');
+        return { n: list.length, seen: list.filter(c => meta.sandbox || seen[c.id]).length, html: cards || '<p class="dim">該当するカードがない。</p>' };
+    }
+    const Z_TYPE = { '全般': 0, '自然': 1, '人災': 2, '社会': 3 };
+    const Z_RAR = { C: 0, U: 1, R: 2, L: 3, X: 4, K: 5, D: 6 };
+    function zukanGroup(c) {
+        if (c.rarity === 'D')
+            return { key: 'D', label: zSeenRar('D') ? '禍根' : '？？？', o: 900 };
+        if (c.rarity === 'K')
+            return { key: 'K', label: zSeenRar('K') ? 'カタストロフィック' : '？？？', o: 800 };
+        if (c.unlock && c.unlock.character)
+            return { key: 'u', label: '人物ゆかりの制度', o: 100 };
+        const ri = E.RG.findIndex(r => r.key === c.region);
+        return { key: 'r-' + c.region, label: ri >= 0 ? E.RG[ri].name : 'その他', o: ri >= 0 ? ri : 99 };
+    }
+    let Z_ORDER = null;
+    function zSeenRar(r) { if (meta.sandbox)
+        return true; const sn = meta.seen || {}; return E.D.cards.some(c => c.rarity === r && sn[c.id]); }
+    function zukanOrder() {
+        if (Z_ORDER)
+            return Z_ORDER;
+        const chi = c => c.unlock && c.unlock.character ? Math.max(0, E.D.characters.findIndex(h => h.id === c.unlock.character)) : 0;
+        const key = c => { const g = zukanGroup(c); return [g.o, chi(c), E.RESEARCH_CARDS.has(c.id) ? 1 : 0, Z_TYPE[(c.target || '').split(':')[0]] ?? 9, Z_RAR[c.rarity] ?? 9]; };
+        Z_ORDER = E.D.cards.slice().sort((a, b) => { const ka = key(a), kb = key(b); for (let i = 0; i < ka.length; i++)
+            if (ka[i] !== kb[i])
+                return ka[i] - kb[i]; return a.name.localeCompare(b.name, 'ja'); });
+        return Z_ORDER;
+    }
+    function zukanItem(c) {
+        const seen = meta.seen || {};
+        {
             if (!meta.sandbox && !seen[c.id])
                 return `<div class="zitem unseen"><div class="card zback"><div class="zq">？</div></div></div>`;
             const locked = !E.cardUnlocked(meta, c.id);
             const rgn = E.RG.find(r => r.key === c.region);
             return `<div class="zitem ${locked ? 'locked' : ''}">${cardHTML(c.id, { region: null, foot: `<div class="ztags">${rgn ? `<span class="ztag r" style="--rc:${rgn.color}">${esc(rgn.name)}</span>` : ''}${locked && c.unlock ? `<span class="ztag u">${esc(c.unlock.condition)}</span>` : ''}</div>` })}</div>`;
-        }).join('');
-        return { n: list.length, seen: list.filter(c => meta.sandbox || seen[c.id]).length, html: cards || '<p class="dim">該当するカードがない。</p>' };
+        }
     }
     function zukanHTML() {
         const f = ui.zukan || (ui.zukan = { region: '', rarity: '', q: '' });
@@ -939,7 +1028,7 @@
         return `<h3>カード図鑑 <span class="dim" id="zcount">出会った制度 ${L.seen} / ${L.n}枚</span></h3>
     <div class="zfilter">
       <select data-act="zf" data-k="region">${opt([['', 'すべての地方']].concat(E.RG.map(r => [r.key, r.name])), f.region)}</select>
-      <select data-act="zf" data-k="rarity">${opt([['', 'すべてのレア'], ['C', 'コモン'], ['U', 'アンコモン'], ['R', 'レア'], ['L', 'エピック'], ['X', 'レジェンド'], ['K', 'カタストロフィック'], ['D', '禍根']], f.rarity)}</select>
+      <select data-act="zf" data-k="rarity">${opt([['', 'すべてのレア'], ['C', 'コモン'], ['U', 'アンコモン'], ['R', 'レア'], ['L', 'エピック'], ['X', 'レジェンド'], ['K', zSeenRar('K') ? 'カタストロフィック' : '？？？'], ['D', zSeenRar('D') ? '禍根' : '？？？']], f.rarity)}</select>
       <input data-act="zq" placeholder="名前や効果で探す" value="${esc(f.q)}">
     </div>
     <div class="zgrid" id="zgrid">${L.html}</div>
@@ -989,7 +1078,7 @@
       <p>${esc(R.d.name)} ・ 対策値 ${fmt(R.total)} / ${fmt(R.req)}${R.coin ? ` ・ コインは${R.coin}` : ''}</p>
       ${R.dmg ? `<p class="bad">被害 ${R.dmg}</p>` : ''}
       <p>議会資金 +${R.income || 0}</p>
-      <div class="m-btns">${E.canRevise(S) ? '<button data-act="revise">修正する</button>' : ''}<button class="primary" data-act="next">${S.phase === 'winter' ? '冬は続く' : S.pendingReward ? '報酬へ' : '議会へ'}</button></div>`, R.success ? 'ok' : 'ng');
+      <div class="m-btns"><button class="primary" data-act="next">${S.phase === 'winter' ? '冬は続く' : S.pendingReward ? '報酬へ' : '議会へ'}</button></div>`, R.success ? 'ok' : 'ng');
         }
         else if ((S.phase === 'over' || S.phase === 'clear') && !ui.endPeek)
             renderEnding();
@@ -1059,10 +1148,10 @@
         const used = Object.entries(st.playCount || {}).sort((a, b) => b[1] - a[1]).slice(0, 6)
             .map(([id, n], i) => `<div class="rv-used" style="animation-delay:${.5 + i * .07}s">${CARD[id] ? cardHTML(id, {}) : ''}<div class="rv-n">${n}回</div></div>`).join('') || '<p class="dim">なし</p>';
         const facs = (S.facilities || []).map(f => E.FAC[f.id] ? esc(E.FAC[f.id].name) : '').filter(Boolean).join('、') || 'なし';
-        const abs = (S.abilities || []).map(a => ABILITIES[a] ? esc(ABILITIES[a].name) : '').filter(Boolean).join('、') || 'なし';
         $('#app').innerHTML = `<div class="review">
-    <div class="rv-head"><div class="rv-kicker">振り返り</div><h1>${esc(S.nation)}</h1><div class="rv-sub">${esc(S.leader)} ・ ${esc(CHAR[S.charId] ? CHAR[S.charId].name : '')} ・ ${esc(e.title || '')}</div></div>
+    <div class="rv-head"><div class="rv-kicker">振り返り</div><h1>${esc(S.nation)}</h1><div class="rv-sub">${esc(S.leader)} ・ ${esc(CHAR[S.charId] ? CHAR[S.charId].name : '')} ・ ${esc(e.title || '')}</div>${S.seedText ? `<div class="rv-seed">種 ${esc(S.seedText)}</div>` : ''}</div>
     <section class="rv-sec"><h2>国の歩み</h2>${reviewChart()}</section>
+    ${(S.curseLog || []).length ? `<section class="rv-sec"><h2>禍根の来歴</h2><ol class="rv-curses">${S.curseLog.map((c, i) => { const gone = !S.deck.some(k => k.uid === c.uid); return `<li class="${gone ? 'gone' : ''}" style="animation-delay:${.3 + i * .06}s"><span class="rc-when">${esc(c.when)}</span><span class="rc-cause">${esc(c.cause)}とき</span><span class="rc-name">「${esc(CARD[c.id] ? CARD[c.id].name : c.id)}」が紛れ込んだ${gone ? '(のちに消えた)' : ''}</span></li>`; }).join('')}</ol></section>` : ''}
     <section class="rv-sec"><h2>数字</h2><div class="rv-tiles">${tiles}</div></section>
     <section class="rv-sec rv-two"><div><h2>最高の一手</h2>${best}</div><div><h2>よく使った制度</h2><div class="rv-useds">${used}</div></div></section>
     <section class="rv-sec"><h2>年表</h2>${chronHTML(false)}</section>
@@ -1115,7 +1204,7 @@
         <li>基礎。何の条件もなくても出す対応力</li>
         <li>名前と強化の印。◆は強化済み、◇は重ねて強化しているカード(数字は回数)か、強化すると別のカードに化けるカード</li>
         <li>出身の地方。地方ごとに得意なことがある</li>
-        <li>中央か地方か。中央のカードは集権度が高いほど、地方のカードはその地方の信頼が高いほど強い。どちらの印もないのは中立</li>
+        <li>中央か地方か。中央のカードは集権度が高いほど、地方のカードはその地方の信頼が高いほど強い。地方のカードは${E.LOCAL_C_EVERY}枚出すごとに集権度を1下げる。どちらの印もないのは中立</li>
         <li>型。全般はどの災害でも働く。型が書かれたカードは、その型の災害で働くことが多い</li>
         <li>効果。条件がそろうと、基礎に対応力や倍率が上乗せされる</li>
         <li>珍しさ。コモン・アンコモン・レア・エピック・レジェンド</li>
@@ -1142,13 +1231,13 @@
     <p>「もう一度発動」は、指したカードの効果を、その場でもう一度丸ごと起こす(基礎の対応力も、倍率+も倍率×も、もう一度入る)。</p>
     ${rbFig(`<div class="rb-seq">${[['1', '北嶺のカード'], ['2', '倍率×のカード'], ['3', '再演'], ['4', '呼応(北嶺)']].map(([n, t]) => `<div><b>${n}</b>${t}</div>`).join('')}</div>
       <ul class="rb-list"><li>再演(3番)は、直前に選んだ2番をもう一度発動する</li><li>呼応(4番)は、同じ地方のカードのうち最初に選んだ1番をもう一度発動する</li><li>合唱のような「先に選んだカードすべて」は、自分より小さい番号のカード全部</li><li>主権の分有のような「全部が発動し終えたあと」の効果は、最後にまとめて起きる</li></ul>`, '向き先は、選んだ順(カードの番号)で決まる')}
-    <p>もう一度発動したカードがもう一度発動の効果を持っていれば、その効果も起きる(重なりは3段まで)。1枚のカードがもう一度発動できるのは1手のうち${E.RETRIG_PER_CARD}回まで、1手全体では40回まで。</p>`],
+    <p>もう一度発動したカードがもう一度発動の効果を持っていれば、その効果も起きる(重なりは${E.RETRIG_DEPTH}段まで)。1枚のカードがもう一度発動できるのは1手のうち${E.RETRIG_PER_CARD}回まで、1手全体では${E.RETRIG_TOTAL}回まで。</p>`],
         ['地方と関係', () => `
     ${rbFig(`<table class="reltab rb-rel"><thead><tr><th></th><th style="--rc:#4f6f8f"><span>北嶺</span></th><th style="--rc:#a0612a"><span>東浦</span></th><th style="--rc:#2f7f7a"><span>南湊</span></th></tr></thead><tbody>
       <tr><th class="rh" style="--rc:#4f6f8f"><span class="rn">北嶺 ${mk(1)}</span><span class="rhp">${rbPips(6, 5)}</span><span class="rtr">信5</span></th><td class="self"></td><td class="rc bad" style="--k:.1">-1</td><td class="rc mid" style="--k:.2">+2 ${mk(2)}</td></tr>
       <tr><th class="rh" style="--rc:#a0612a"><span class="rn">東浦</span><span class="rhp">${rbPips(6, 6)}</span><span class="rtr">信4</span></th><td class="rc bad" style="--k:.1">-1</td><td class="self"></td><td class="rc strong" style="--k:.6">+7 ${mk(3)}</td></tr>
       <tr><th class="rh" style="--rc:#2f7f7a"><span class="rn">南湊</span><span class="rhp">${rbPips(6, 3)}</span><span class="rtr">信6</span></th><td class="rc mid" style="--k:.2">+2</td><td class="rc strong" style="--k:.6">+7</td><td class="self"></td></tr></tbody></table>`, '①地方の残りと信頼 ②関係値 ③5以上の組は協力関係')}
-    <p>地方には残り(体力)と信頼がある。地方のカードは、その地方の信頼が高いほど強い。被害を受けると残りが減り、信頼も下がる。残りが0になった地方は壊滅し、その地方のカードは対応力が半分になる。</p>
+    <p>地方には残り(体力)と信頼がある。地方のカードは、その地方の信頼が高いほど強い。また、地方のカードを出し続けると、権限は少しずつ地方へ戻っていく(${E.LOCAL_C_EVERY}枚出すごとに集権度-1)。被害を受けると残りが減り、信頼も下がる。残りが0になった地方は壊滅し、その地方のカードは対応力が半分になる。</p>
     <p>表の数字は、地方どうしの関係値。関係の良い地方のカードを一緒に出すと倍率が上がり、悪いと下がる。同じ地方のカード同士も少し上がる。関係値5以上の組の数が「協力関係」で、協力関係の数で強くなるカードもある。二つの地方が近づくと、ほかの地方との関係が少し冷える。関係は放っておくと、元の距離感へ戻っていく。</p>
     <p>地方ごとの得意なこと:</p>
     <ul class="rb-list">${E.RG.map(r => `<li><span class="c-reg" style="--rc:${r.color}">${esc(r.name)}</span>「${esc(r.trait)}」${esc(r.traitText)}</li>`).join('')}</ul>
@@ -1157,7 +1246,7 @@
     <p>画面上の集権度は、権限がどれだけ首都に集まっているかを表す(0〜100)。</p>
     ${rbFig(`<table class="rb-calc rb-cf"><tr><th>集権度</th>${[0, 30, 50, 70, 100].map(c => `<td>${c}</td>`).join('')}</tr><tr><th>中央のカードの対応力</th>${[0, 30, 50, 70, 100].map(c => `<td>×${Math.round(0.7 * Math.pow(1.04, c) * 10) / 10}</td>`).join('')}</tr></table>`, '中央のカードは、集権度が100に近づくほど急激に強くなる。倍率+も伸びる')}
     <p>集権度が高いほど、1手で出せる枚数(30ごとに+1)と、議会に並ぶ対策案の数(30と60で+1)も増える。</p>
-    <p>集権度は、災害が来るたびに上がる。すでに高いほど上がり方も速く、ボスでは大きく上がる。中央のカードを出したときや、ラウンドに失敗したときにも上がる。下げるには、議会で権限を地方に返す。</p>`],
+    <p>集権度は、災害が来るたびに上がる。すでに高いほど上がり方も速く、ボスでは大きく上がる。中央のカードを出したときや、ラウンドに失敗したときにも上がる。下げるには、議会で権限を地方に返すか、地方のカードを出す。地方のカードを${E.LOCAL_C_EVERY}枚出すごとに、集権度が1下がる(もう一度発動した分は数えない)。</p>`],
         ['被害と国の終わり', () => `
     <p>ラウンドに失敗すると、届かなかった割合に応じて被害が出る。被害は、通常の災害では三つの地方に、ボスと長い冬ではすべての地方にばらけて入る。まったく届かなかったときは、通常の災害でその三つの地方が、ボスと長い冬ではすべての地方が壊滅しうる。</p>
     ${rbFig(`<div class="rb-hp">${['北嶺', '東浦', '南湊', '西原', '川中', '山背'].map((n, i) => `<div class="${i === 2 || i === 4 ? 'dead' : ''}"><span>${n}</span><em>${i === 2 || i === 4 ? '壊滅' : rbPips(6, [6, 4, 0, 5, 0, 6][i])}</em></div>`).join('')}</div>`, '六つのうち三つが壊滅するか、残りの合計が3割を切ると、国は終わる')}
@@ -1188,12 +1277,6 @@
     <p>ボスの災害には制約がつく(中央のカードが弱まる、資金が消えるなど)。制約はラウンドの始めに画面に出る。</p>
     <p>ボスを越えると報酬を一つ選べる:調印つきのカード、エピック以上のカード、施設。</p>
     <p>第8時代のボス「長い冬」は三段に分かれた最終災害。越えれば本編クリアで、その先はエンドレス。エンドレスでは必要対策値が桁ごと伸びていく。</p>`],
-        ['カタストロフィック', () => `
-    ${rbFig(`<div class="rb-row"><div class="rb-card">${cardHTML('cx_emergency')}</div><div class="rb-card">${cardHTML('curse_seed')}</div><div class="rb-card">${cardHTML('curse_blank')}</div></div>`, '左からカタストロフィック・禍の種・禍根')}
-    <p>権限が首都に集まりきった国や、長い時代を越えた国の議会には、黒いカードが並ぶことがある。それがカタストロフィック。どの地方にも属さず、ほかのカードとは桁の違う力を持つ。</p>
-    <p>そのかわり、手に入れるたびに、そして強化するたびに、禍根が1枚持ち札に紛れ込む。どの禍根が来るかはくじで、跡形もなく消えるだけの当たりもあれば、地方を失うものもある。権限が集まっているほど、重いものが来やすい。</p>
-    <p>最初の1枚で来る禍根は決まっていて、禍の種という。時代を終えるたびに、ときどき新しい禍根を呼ぶ。禍の種はどうやっても消えない。</p>
-    <p>禍根は強化できず、同じものが何枚でも重なる。議会で廃止できるが、ふつうのカードより一段高くつく。出せない禍根も、引き直しで手札から外せる。カタストロフィックは2種類まで持てる。</p>`],
     ];
     function helpHTML() {
         const k = Math.max(0, Math.min(HELP_PAGES.length - 1, ui.helpPage || 0));
@@ -1218,6 +1301,14 @@
     <p><label><input type="checkbox" data-act="crt" ${meta.crt === false ? '' : 'checked'}> ブラウン管の効果(走査線と画面のにじみ)</label></p>
     <p><label><input type="checkbox" data-act="bgmoff" ${meta.bgmOff ? '' : 'checked'}> 曲を流す</label></p>
     <p><label>曲の音量 <input type="range" data-act="bgmvol" min="0" max="100" value="${Math.round(bgmVol() * 100)}"></label></p>
+    <h4>タイトル画面の背景</h4>
+    <p><label>模様 <select data-act="titlebg"><option value="flow" ${bgMode() === 'flow' ? 'selected' : ''}>うねり(等高線)</option><option value="map" ${bgMode() === 'map' ? 'selected' : ''}>古い銅版画</option></select></label></p>
+    <h4>タイトル画面の色</h4>
+    <div class="tp-set">${TITLE_SLOTS.map(([k, a, b, lb]) => `<label><span>${lb}(${a}〜${b}時)</span><select data-act="titlepal" data-slot="${k}">${Object.entries(TITLE_PALS).map(([pk, v]) => `<option value="${pk}" ${titlePalKey(k) === pk ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select></label>`).join('')}</div>
+    <p><button data-act="titlepalreset">タイトル画面の色を元に戻す</button></p>
+    <h4>記録の持ち出し</h4>
+    <p class="dim">記録はこのブラウザの中に、ゲームのフォルダの場所ごとにしまわれている。フォルダを移したり、ブラウザのデータを消したりする前に書き出しておくと、あとで読み込んで続きから遊べる。</p>
+    <p><button data-act="saveexport">記録を書き出す</button> <button data-act="saveimport">記録を読み込む</button><input type="file" id="saveimport-file" accept=".json,application/json" style="display:none"></p>
     <p><button data-act="resetmeta">記録と解放状況を消す</button></p>
     <div class="m-btns"><button data-act="close">閉じる</button></div>`);
     }
@@ -1230,7 +1321,13 @@
             BGM.ctx = new (window.AudioContext || window.webkitAudioContext)();
             BGM.gain = BGM.ctx.createGain();
             BGM.gain.gain.value = bgmVol();
-            BGM.gain.connect(BGM.ctx.destination);
+            BGM.air = BGM.ctx.createBiquadFilter();
+            BGM.air.type = 'lowpass';
+            BGM.air.frequency.value = 20000;
+            BGM.air.Q.value = 0.5;
+            BGM.gain.connect(BGM.air);
+            BGM.air.connect(BGM.ctx.destination);
+            BGM.airT = BGM.airT || 0;
         }
         catch (e) {
             BGM.ctx = null;
@@ -1266,6 +1363,7 @@
             src.loopEnd = Math.min(m.loopEnd, b.duration);
             g.gain.setValueAtTime(0, t);
             g.gain.linearRampToValueAtTime(1, t + 0.6);
+            src.playbackRate.value = bgmRate();
             src.connect(g);
             g.connect(BGM.gain);
             src.start(t);
@@ -1273,6 +1371,34 @@
             BGM.g = g;
             BGM.cur = name;
         });
+    }
+    function bgmRate() { const t = BGM.airT || 0; return 1 - 0.035 * t; }
+    function bgmAir(t) {
+        BGM.airT = t;
+        if (!BGM.ctx || !BGM.air)
+            return;
+        const now = BGM.ctx.currentTime;
+        BGM.air.frequency.setTargetAtTime(20000 * Math.pow(1500 / 20000, t), now, 4);
+        BGM.air.Q.setTargetAtTime(0.5 + 2.5 * t, now, 4);
+        if (BGM.src)
+            BGM.src.playbackRate.setTargetAtTime(bgmRate(), now, 6);
+        if (t > 0.35 && !BGM.wob && BGM.src) {
+            BGM.wob = BGM.ctx.createOscillator();
+            BGM.wobG = BGM.ctx.createGain();
+            BGM.wob.frequency.value = 0.13;
+            BGM.wob.connect(BGM.wobG);
+            BGM.wob.start();
+        }
+        if (BGM.wobG) {
+            BGM.wobG.gain.setTargetAtTime(Math.max(0, t - 0.35) * 0.02, now, 4);
+            if (BGM.src && BGM.wobSrc !== BGM.src) {
+                try {
+                    BGM.wobG.connect(BGM.src.playbackRate);
+                    BGM.wobSrc = BGM.src;
+                }
+                catch (e) { }
+            }
+        }
     }
     function bgmScene() {
         if (ui.view === 'review')
@@ -1321,6 +1447,49 @@
         winter: [[18, 28, 42], [34, 52, 74], [56, 80, 108], [86, 112, 140], [124, 150, 176], [170, 194, 214]],
         asteroid: [[6, 4, 12], [16, 10, 30], [32, 18, 52], [56, 30, 76], [90, 46, 96], [140, 70, 110]]
     };
+    const TITLE_PALS = {
+        A: { name: '墨と朱', pal: [[16, 15, 14], [28, 26, 24], [42, 39, 36], [58, 54, 50], [80, 74, 68], [168, 64, 46]] },
+        B: { name: '夜の測量図', pal: [[9, 13, 22], [15, 22, 36], [23, 33, 52], [33, 47, 70], [47, 65, 92], [192, 168, 112]] },
+        C: { name: '緑青', pal: [[15, 19, 17], [22, 32, 28], [32, 47, 41], [45, 65, 56], [64, 89, 77], [168, 136, 82]] },
+        D: { name: '紫紺と薄紅', pal: [[19, 15, 23], [30, 23, 37], [43, 33, 52], [58, 45, 68], [78, 61, 88], [188, 126, 112]] },
+        E: { name: '古い写真', pal: [[26, 21, 17], [40, 33, 26], [56, 47, 37], [74, 63, 49], [98, 84, 66], [176, 150, 104]] },
+        M1: { name: '朝霧', pal: [[44, 52, 60], [60, 70, 80], [78, 90, 100], [98, 110, 120], [122, 134, 142], [226, 180, 150]] },
+        M2: { name: '夜明けの藤', pal: [[48, 44, 60], [66, 60, 80], [86, 80, 100], [108, 102, 120], [134, 128, 144], [232, 190, 140]] },
+        M3: { name: '若草', pal: [[42, 52, 44], [58, 70, 60], [76, 90, 76], [96, 112, 94], [120, 136, 116], [226, 214, 140]] },
+        N1: { name: '白昼の石畳', pal: [[92, 86, 76], [112, 106, 94], [134, 128, 114], [156, 150, 134], [180, 174, 156], [176, 84, 56]] },
+        N2: { name: '晴れた官庁街', pal: [[62, 86, 108], [78, 104, 128], [96, 124, 148], [118, 146, 168], [144, 170, 188], [236, 214, 150]] },
+        N3: { name: '麦畑', pal: [[104, 88, 56], [126, 108, 70], [148, 128, 86], [170, 150, 104], [194, 174, 126], [60, 92, 64]] },
+    };
+    const TITLE_SLOTS = [['morning', 5, 10, '朝'], ['day', 10, 16, '昼'], ['evening', 16, 19, '夕方'], ['night', 19, 24, '夜'], ['late', 0, 5, '深夜']];
+    const TITLE_DEFAULT = { morning: 'M1', day: 'N2', evening: 'E', night: 'D', late: 'B' };
+    function titleSlotNow() { let h = 12; try {
+        h = new Date().getHours();
+    }
+    catch (e) { } return (TITLE_SLOTS.find(s0 => h >= s0[1] && h < s0[2]) || TITLE_SLOTS[0])[0]; }
+    function titlePalKey(slot) { const m = meta.titlePal || {}; const k = m[slot || titleSlotNow()] || TITLE_DEFAULT[slot || titleSlotNow()]; return TITLE_PALS[k] ? k : TITLE_DEFAULT[slot || titleSlotNow()]; }
+    const rgb = (c, k) => `rgb(${c.map(v => Math.round(Math.max(0, Math.min(255, v * (k || 1))))).join(',')})`;
+    const lum = c => 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+    function applyTitleColors(key) {
+        const el = document.getElementById && document.getElementById('splash');
+        if (!el || !el.style || !el.style.setProperty)
+            return;
+        const P = TITLE_PALS[key].pal, acc = P[5], hi = lum(P[3]) > 110;
+        const set = (k, v) => el.style.setProperty(k, v);
+        set('--tp1', rgb(acc));
+        set('--tp1d', rgb(acc, 0.55));
+        set('--tp1t', lum(acc) > 140 ? '#1a1713' : '#f1e6c8');
+        set('--tp2', rgb(P[4], hi ? 0.62 : 1.25));
+        set('--tp2d', rgb(P[4], hi ? 0.36 : 0.7));
+        set('--tp3', rgb(P[3], hi ? 0.5 : 1.05));
+        set('--tp3d', rgb(P[3], hi ? 0.3 : 0.6));
+        set('--tp4', rgb(P[1], hi ? 0.45 : 0.95));
+        set('--tp4d', rgb(P[0], hi ? 0.3 : 0.6));
+        set('--tpas', rgb(acc));
+        set('--tpasd', rgb(acc, 0.5));
+        set('--tptint', rgb(P[3], hi ? 1.15 : 1.5));
+        set('--tpdark', String(Math.max(0, Math.min(0.6, (130 - lum(P[3])) / 110))));
+    }
+    function useTitlePal(key) { BGS.pal = TITLE_PALS[key].pal; BGS.titleKey = key; BGS.last = 0; applyTitleColors(key); }
     const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
     const BGS = { pal: BG_PAL.title, t: 0, last: 0, speed: 1 };
     const BGN = (() => { const P = []; let q = 1234567; for (let i = 0; i < 512; i++) {
@@ -1334,37 +1503,109 @@
         const a = h(xi, yi) + (h(xi + 1, yi) - h(xi, yi)) * sx, b = h(xi, yi + 1) + (h(xi + 1, yi + 1) - h(xi, yi + 1)) * sx;
         return a + (b - a) * sy;
     }
+    const ENGR_LAMPS = [{ "k": "lantern", "x": 59.25, "y": 27.56, "d": 79.5 }, { "k": "lamppost", "x": 38.3, "y": 71.0, "d": 15.2 }, { "k": "lamppost", "x": 97.65, "y": 71.62, "d": 17.9 }, { "k": "lamppost", "x": 37.6, "y": 75.39, "d": 45.8 }, { "k": "lamppost", "x": 71.56, "y": 76.27, "d": 52.2 }, { "k": "brazier", "x": 38.25, "y": 45.16, "d": 50.2 }, { "k": "lamp", "x": 46.82, "y": 1.38, "d": 58.1 }, { "k": "lamp", "x": 53.95, "y": 22.21, "d": 69.1 }, { "k": "lamp", "x": 42.21, "y": 31.55, "d": 88.8 }, { "k": "lamp", "x": 57.53, "y": 34.98, "d": 106.6 }];
+    const ENGR_FR = [['noon', 0], ['afternoon', 1.6], ['dusk', 3.0], ['night', 4.2], ['night', 12.8], ['dawn', 14.0], ['morning', 15.0], ['noon', 16]];
+    const ENGR_CYCLE = 16;
+    const ENGR = { t0: 0, pair: '', timer: null };
+    function engrPhase0() {
+        let h = 12;
+        try {
+            const d = new Date();
+            h = d.getHours() + d.getMinutes() / 60;
+        }
+        catch (e) { }
+        const t = ((h - 12) % 24 + 24) % 24;
+        return t <= 6 ? t / 6 * 3.5 : t <= 18 ? 3.5 + (t - 6) / 12 * 10 : 13.5 + (t - 18) / 6 * 2.5;
+    }
+    function engrTick() {
+        const A = document.getElementById && document.getElementById('engrA');
+        if (!A) {
+            clearInterval(ENGR.timer);
+            ENGR.timer = null;
+            return;
+        }
+        const B = document.getElementById('engrB'), G = document.getElementById('engrG'), N = document.getElementById('engrN');
+        const ph = ((ENGR.base + (Date.now() - ENGR.t0) / 60000) % ENGR_CYCLE + ENGR_CYCLE) % ENGR_CYCLE;
+        let i = 0;
+        while (i < ENGR_FR.length - 2 && ph >= ENGR_FR[i + 1][1])
+            i++;
+        const [a, ta] = ENGR_FR[i], [b, tb] = ENGR_FR[i + 1], f = Math.max(0, Math.min(1, (ph - ta) / (tb - ta)));
+        const key = a + '>' + b;
+        if (ENGR.pair !== key) {
+            ENGR.pair = key;
+            A.style.backgroundImage = `url(title_${a}.webp)`;
+            B.style.backgroundImage = `url(title_${b}.webp)`;
+            G.style.backgroundImage = `url(title_${a}.webp)`;
+        }
+        B.style.opacity = f.toFixed(3);
+        const dark = ph < 3.0 ? 0 : ph < 4.2 ? (ph - 3.0) / 1.2 : ph < 12.8 ? 1 : ph < 14.0 ? 1 - (ph - 12.8) / 1.2 : 0;
+        const box = A.parentNode;
+        if (box && box.style)
+            box.style.setProperty('--dark', (dark * dark * (3 - 2 * dark)).toFixed(3));
+    }
+    function engrStart() {
+        if (!document.getElementById || !document.getElementById('engrA'))
+            return;
+        if (!ENGR.t0) {
+            ENGR.t0 = Date.now();
+            ENGR.base = engrPhase0();
+            ['dawn', 'morning', 'noon', 'afternoon', 'dusk', 'night'].forEach(k => { try {
+                const im = new Image();
+                im.src = `title_${k}.webp`;
+            }
+            catch (e) { } });
+        }
+        ENGR.pair = '';
+        engrTick();
+        if (!ENGR.timer)
+            ENGR.timer = setInterval(engrTick, 1000);
+    }
+    function bgMode() { return meta.titleBg === 'map' ? 'map' : 'flow'; }
     function bgLoop(ts) {
         const cv = document.getElementById && document.getElementById('bgcv');
         if (!cv || !cv.getContext)
             return;
+        if (BGS.isTitle && ts - (BGS.clockAt || 0) > 30000) {
+            BGS.clockAt = ts;
+            if (!BGS.preview) {
+                const k0 = titlePalKey();
+                if (k0 !== BGS.titleKey)
+                    useTitlePal(k0);
+            }
+        }
         if (ts - BGS.last > 80) {
             BGS.last = ts;
             BGS.t += 0.04 * BGS.speed;
             const W = cv.width, H = cv.height, g = BGS.ctx || (BGS.ctx = cv.getContext('2d')), img = BGS.img || (BGS.img = g.createImageData(W, H)), d = img.data, pal = BGS.pal, n = pal.length, t = BGS.t;
-            const ox = t * 1.6, oy = Math.sin(t * 0.13) * 3;
-            for (let y = 0; y < H; y++)
-                for (let x = 0; x < W; x++) {
-                    const u = (x + ox) / 22, w = (y + oy) / 22;
-                    let v = vnoise(u, w) * 0.65 + vnoise(u * 2.1 + 7, w * 2.1 - t * 0.05) * 0.3 + vnoise(u * 4.3, w * 4.3 + 3) * 0.12;
-                    v = (v + 1) / 2;
-                    const lv = v * 7, fr = lv - Math.floor(lv);
-                    let idx = Math.round(1 + v * (n - 2) + (BAYER[(y & 3) * 4 + (x & 3)] / 16 - 0.5) * 0.9);
-                    if (fr < 0.09)
-                        idx = Math.max(0, idx - 2);
-                    if ((x + Math.floor(ox)) % 32 === 0 && (y & 1) || (y % 24 === 0 && ((x + Math.floor(ox)) & 1)))
-                        idx = Math.max(0, idx - 1);
-                    const c = pal[Math.max(0, Math.min(n - 1, idx))], i = (y * W + x) * 4;
-                    d[i] = c[0];
-                    d[i + 1] = c[1];
-                    d[i + 2] = c[2];
-                    d[i + 3] = 255;
-                }
-            g.putImageData(img, 0, 0);
+            {
+                const ox = t * 1.6, oy = Math.sin(t * 0.13) * 3;
+                for (let y = 0; y < H; y++)
+                    for (let x = 0; x < W; x++) {
+                        const u = (x + ox) / 22, w = (y + oy) / 22;
+                        let v = vnoise(u, w) * 0.65 + vnoise(u * 2.1 + 7, w * 2.1 - t * 0.05) * 0.3 + vnoise(u * 4.3, w * 4.3 + 3) * 0.12;
+                        v = (v + 1) / 2;
+                        const lv = v * 7, fr = lv - Math.floor(lv);
+                        let idx = Math.round(1 + v * (n - 2) + (BAYER[(y & 3) * 4 + (x & 3)] / 16 - 0.5) * 0.9);
+                        if (fr < 0.09)
+                            idx = Math.max(0, idx - 2);
+                        if ((x + Math.floor(ox)) % 32 === 0 && (y & 1) || (y % 24 === 0 && ((x + Math.floor(ox)) & 1)))
+                            idx = Math.max(0, idx - 1);
+                        const c = pal[Math.max(0, Math.min(n - 1, idx))], i = (y * W + x) * 4;
+                        d[i] = c[0];
+                        d[i + 1] = c[1];
+                        d[i + 2] = c[2];
+                        d[i + 3] = 255;
+                    }
+                g.putImageData(img, 0, 0);
+            }
         }
         (window.requestAnimationFrame || (f => setTimeout(() => f(Date.now()), 80)))(bgLoop);
     }
-    function setBgTheme(k) { BGS.pal = BG_PAL[k] || BG_PAL.neutral; BGS.speed = /riot|eruption|fire|asteroid/.test(k) ? 2.2 : /blackout|conspiracy/.test(k) ? 0.5 : 1; }
+    function setBgTheme(k) { BGS.isTitle = k === 'title'; if (k === 'title') {
+        useTitlePal(titlePalKey());
+        BGS.speed = 1;
+        return;
+    } BGS.pal = BG_PAL[k] || BG_PAL.neutral; BGS.speed = /riot|eruption|fire|asteroid/.test(k) ? 2.2 : /blackout|conspiracy/.test(k) ? 0.5 : 1; }
     function toast(text, kind) {
         const box = document.getElementById && document.getElementById('toasts');
         if (!box || !document.createElement)
@@ -1503,6 +1744,53 @@
             case 'settings':
                 showSettings();
                 return;
+            case 'saveexport': {
+                try {
+                    const blob = new Blob([E.exportSave()], { type: 'application/json' }), a = document.createElement('a'), d = new Date();
+                    a.href = URL.createObjectURL(blob);
+                    a.download = `letat-kiroku-${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}.json`;
+                    document.body.appendChild(a);
+                    a.click();
+                    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+                    toast('記録を書き出した。', 'good');
+                }
+                catch (e) {
+                    toast('書き出せなかった。', 'bad');
+                }
+                return;
+            }
+            case 'saveimport': {
+                const f = $('#saveimport-file');
+                if (f)
+                    f.click();
+                return;
+            }
+            case 'saveimportgo': {
+                const err = E.importSave(ui.pendingImport || '');
+                ui.pendingImport = null;
+                if (err) {
+                    toast(err, 'bad');
+                    closeModal();
+                    return;
+                }
+                location.reload();
+                return;
+            }
+            case 'bgswitch':
+                meta.titleBg = bgMode() === 'map' ? 'flow' : 'map';
+                E.saveMeta(meta);
+                BGS.last = 0;
+                render();
+                return;
+            case 'titlebg': return;
+            case 'titlepalreset':
+                meta.titlePal = null;
+                E.saveMeta(meta);
+                BGS.preview = false;
+                if (ui.view === 'title')
+                    useTitlePal(titlePalKey());
+                showSettings();
+                return;
             case 'unlockall':
                 meta.unlockAll = t.checked;
                 E.saveMeta(meta);
@@ -1567,7 +1855,7 @@
                 if (!E.charUnlocked(meta, ui.pick))
                     return;
                 E.clearRun();
-                S = E.newRun(ui.pick, meta, { reqMul: DIFF[ui.diff], difficulty: ui.diff, leader: ui.names.leader, nation: ui.names.nation });
+                S = E.newRun(ui.pick, meta, { reqMul: DIFF[ui.diff], difficulty: ui.diff, leader: ui.names.leader, nation: ui.names.nation, seed: ui.seed || null });
                 ui.view = 'game';
                 ui.sel = [];
                 ui.draftSel = [];
@@ -1663,9 +1951,6 @@
                 if (E.declare(S))
                     ui.fx.stamp = true;
                 break;
-            case 'swap':
-                E.twinSwap(S);
-                break;
             case 'backer':
                 E.backerChoice(S, t.dataset.c);
                 closeModal();
@@ -1675,12 +1960,6 @@
                 ui.sel = [];
                 ui.lastPlay = null;
                 E.nextFromResult(S);
-                break;
-            case 'revise':
-                closeModal();
-                E.useRevision(S);
-                ui.last = null;
-                ui.sel = [];
                 break;
             case 'reward':
                 E.pickReward(S, +t.dataset.i);
@@ -1736,7 +2015,8 @@
                 }
                 break;
             case 'zf':
-            case 'zq': return;
+            case 'zq':
+            case 'titlepal': return;
             case 'ptab':
                 ui.ptab = t.dataset.k;
                 break;
@@ -1800,12 +2080,6 @@
                 const a = $('#dv-fac');
                 if (a)
                     E.devAddFacility(S, a.value);
-                break;
-            }
-            case 'devab': {
-                const a = $('#dv-ab');
-                if (a)
-                    E.devAddAbility(S, a.value);
                 break;
             }
             case 'devact':
@@ -1886,6 +2160,31 @@
             ui.zukan[t.dataset.k] = t.value;
             zukanFilter(ui.zukan.q);
         }
+        if (t.id === 'saveimport-file' && t.files && t.files[0]) {
+            const rd = new FileReader();
+            rd.onload = () => { ui.pendingImport = String(rd.result || ''); modal(`<h3>記録を読み込む</h3><p>いまの記録と、途中のランは、読み込んだものに置き換わる。</p><div class="m-btns"><button data-act="close">やめる</button><button class="primary" data-act="saveimportgo">置き換える</button></div>`); };
+            rd.readAsText(t.files[0]);
+            t.value = '';
+            return;
+        }
+        if (t.dataset.act === 'titlebg') {
+            meta.titleBg = t.value;
+            E.saveMeta(meta);
+            BGS.last = 0;
+            if (ui.view === 'title') {
+                closeModal();
+                render();
+            }
+            return;
+        }
+        if (t.dataset.act === 'titlepal') {
+            meta.titlePal = Object.assign({}, TITLE_DEFAULT, meta.titlePal || {}, { [t.dataset.slot]: t.value });
+            E.saveMeta(meta);
+            if (ui.view === 'title') {
+                BGS.preview = true;
+                useTitlePal(t.value);
+            }
+        }
     });
     document.addEventListener('input', ev => {
         if (ev.target && ev.target.dataset && ev.target.dataset.act === 'bgmvol') {
@@ -1937,5 +2236,30 @@
     });
     if (document.getElementById)
         (window.requestAnimationFrame || (f => setTimeout(() => f(Date.now()), 66)))(bgLoop);
+    function bgmUnlock() { if (meta.bgmOff)
+        return; try {
+        bgmInit();
+        if (BGM.ctx && BGM.ctx.state === 'suspended')
+            BGM.ctx.resume();
+        bgmPlay(bgmScene());
+    }
+    catch (e) { } }
+    ['pointerdown', 'keydown', 'touchstart'].forEach(ev => document.addEventListener(ev, bgmUnlock, { capture: true, passive: true }));
+    function showGate() {
+        if (!document.body || !document.createElement || meta.bgmOff)
+            return;
+        const g = document.createElement('div');
+        g.id = 'gate';
+        g.className = 'gate';
+        g.innerHTML = '<div class="gate-in"><div class="gate-mark">L\'ÉTAT, C\'EST PAS MOI</div><div class="gate-cta">▶ Appuyez</div></div>';
+        const go = () => { if (!g.parentNode)
+            return; bgmUnlock(); g.className += ' out'; setTimeout(() => { if (g.parentNode)
+            g.parentNode.removeChild(g); }, 600); if (ui.view === 'title')
+            render(); };
+        g.addEventListener('pointerdown', go);
+        document.addEventListener('keydown', go, { once: true });
+        document.body.appendChild(g);
+    }
     render();
+    showGate();
 })();
