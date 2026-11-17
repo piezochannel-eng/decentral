@@ -2271,12 +2271,6 @@
         lessons_learned: { text: 'ラウンドを乗り切れないたびに、まだ強化していないカードからランダムに3枚を強化', fx: [{ watch: { ev: 'fail', n: 1, do: { levelUpRandom: 3 }, repeat: true } }, { useAcc: true }] },
         time_capsule: { text: 'ラウンドが終わるのを8回数えると、ランダムなレジェンドのカードを2枚得る。このカードは消える', fx: [{ watch: { ev: 'round', n: 8, do: { gainRare: 'X', count: 2 }, repeat: false } }, { useAcc: true }] },
         hk_eternity: { text: '北嶺のカードが去るたびに、その基礎の2倍をこのカードの基礎に加える。去った北嶺のカード1枚につき倍率×1.2' },
-        hk_village_meet: { text: '出すと集権度-2', fx: [{ c: -2 }] },
-        ns_water_union: { text: '出すと集権度-2', fx: [{ c: -2 }] },
-        mn_ura_agreement: { text: '出すと集権度-2', fx: [{ c: -2 }] },
-        hk_pass_watch: { text: '出すと集権度-3', fx: [{ c: -3 }] },
-        ns_commons_rule: { text: '出すと集権度-3', fx: [{ c: -3 }] },
-        ns_granary_domain: { text: '出すと集権度-4', fx: [{ c: -4 }] },
         surplus_cash: { text: 'このラウンドを乗り切ったとき、余った対策値が必要対策値の10%ごとに議会資金+2', fx: [{ overFunds: 2 }] },
         hk_last_pass: { text: '最後の手番で出すと、このラウンドで使った手番の数+2だけ倍率を掛ける', fx: [{ if: { last: true }, xq: 'playsUsedPlus2' }] },
         grand_ambition: { text: 'ラウンドを乗り切るのを20回数えると、持ち札すべてを強化。このカードは消える', fx: [{ watch: { ev: 'win', n: 20, do: { levelUpAll: 1 }, repeat: false } }, { useAcc: true }] }
@@ -2808,6 +2802,7 @@
     }
     const r2 = v => Math.round(v * 100) / 100;
     const RETRIG_PER_CARD = 12;
+    const LOCAL_C_EVERY = 6;
     const RETRIG_TOTAL = 300, RETRIG_DEPTH = 6;
     function scoreHand(S, uids, preview) {
         const R = S.R, d = R.d;
@@ -3283,6 +3278,15 @@
             }
             if (def.alignment === '集権')
                 changeC(S, 1.5 * sgn);
+            if (c.cat === 'local') {
+                S.stats.localPlayed = (S.stats.localPlayed || 0) + 1;
+                if (S.stats.localPlayed % LOCAL_C_EVERY === 0) {
+                    const c0 = S.C;
+                    changeC(S, -1);
+                    if (S.C < c0)
+                        log(S, '地方に任せた仕事が積み重なり、権限が少し地方へ戻った(集権度-1)。', 'good');
+                }
+            }
             if (def.alignment === '抑圧') {
                 changeC(S, 3 * sgn);
                 addU(S, 1.5);
@@ -4689,7 +4693,7 @@
         pickReward, skipReward, rerollReward, rerollRewardCost, resolveEvent, continueEndless, alive, cardByUid, regionById,
         windowStage, roundLabel, Ceff, owned,
         FAC, STAMP, luckOf, maxedOwned, stampPrice, effectAtLv, upMode, insight, upgradeNote, upK, maxDiscard, buyOffer, offerCost, OFFER_CAP, SLOT_CAP, maxLvOf, buyStamp, cancelStamp, applyStamp, rerollStamps, rerollFacilities, mergeTarget, RG, LINK_AT, REL_MIN, REL_MAX, getRel, linksCount, alivePairs, buyFacility, sellFacility, buySlot, slotCost, MAX_SLOTS, facPrice, SLOT_CAP_: 8,
-        fxOf, extraBase, charProfile, RESEARCH_CARDS, INFO_CARDS, declBonusOf, maxPlayNote, offerNote, baseMulOf, ownedUp, growExp, rarityOdds, RETRIG_PER_CARD, RETRIG_TOTAL, RETRIG_DEPTH,
+        fxOf, extraBase, charProfile, RESEARCH_CARDS, INFO_CARDS, declBonusOf, maxPlayNote, offerNote, baseMulOf, ownedUp, growExp, rarityOdds, RETRIG_PER_CARD, RETRIG_TOTAL, RETRIG_DEPTH, LOCAL_C_EVERY,
         devSet, devDisaster, devJump, devAddCard, devAddFacility, devAction, devInfo, reqFor
     };
 })(typeof window !== 'undefined' ? window : globalThis);
