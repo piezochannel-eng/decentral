@@ -371,6 +371,15 @@
                 S.facilities = S.facilities.filter(f => FAC[f.id]);
             if (S.facShop)
                 S.facShop = S.facShop.filter(o => FAC[o.id]);
+            (S.deck || []).forEach(c => { if (c.stamp && !STAMP[c.stamp]) {
+                delete c.stamp;
+                delete c.stampedAt;
+            } });
+            if (S.stampShop)
+                S.stampShop = S.stampShop.filter(o => STAMP[o.id]);
+            if (S.reward && S.reward.options)
+                S.reward.options.forEach(o => { if (o.stamp && !STAMP[o.stamp])
+                    o.stamp = pick(Object.keys(STAMP)); });
             return S;
         }
         catch (e) {
@@ -599,7 +608,7 @@
         }
         return out.map(id => ({ id, price: stampPrice(S, id), sold: false }));
     }
-    function stampPrice(S, id) { const n = S.deck.filter(c => c.stamp).length; return Math.max(1, Math.round(STAMP[id].price * priceMul(S) * Math.pow(1.6, n))); }
+    function stampPrice(S, id) { return Math.max(1, Math.round(STAMP[id].price * discountMul(S))); }
     function buyStamp(S, i) {
         const o = S.stampShop[i];
         if (!o || o.sold || S.P.stamped || S.funds < o.price)
@@ -738,7 +747,7 @@
     }
     const MAX_SLOTS = 6, SLOT_CAP = 8;
     const FIB = [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1597, 2584, 4181, 6765];
-    const fib = n => FIB[Math.min(n, FIB.length - 1)] * (n >= FIB.length ? Math.pow(1.618, n - FIB.length + 1) : 1);
+    const fib = n => Math.round(FIB[Math.min(n, FIB.length - 1)] * (n >= FIB.length ? Math.pow(1.618, n - FIB.length + 1) : 1));
     function slotCost(S) { return Math.round(8 * fib(S.facSlots - 2)); }
     const OFFER_CAP = 3;
     function offerCost(S) { return 15 * fib((S.offerPlus || 0) + 1); }
@@ -2260,7 +2269,9 @@
         awakening: { text: '怠惰の倍率の3倍を、この手の倍率に掛ける。怠惰の倍率は1に戻る。一度使うと消える' },
         perm_revolution: { text: '持っていると、革命直後のラウンドは必要対策値が1/3' },
         loaded_dice: { text: '持っていると、コイン投げを時代に二度までやり直す' },
-        house: { text: '持っていると、コイン投げで負けた被害が半分になり資金+6' },
+        house: { text: '持っていると、コイン投げで負けた被害を一度だけ1/4にし、資金+6。使うと消え、このランでは二度と現れない' },
+        disaster_pact: { text: '出すとこのラウンドの被害が1/4になる(もう一度発動するたびに、さらに1/4)。一度使うと消え、このランでは二度と現れない', fx: [{ halfDamage: 2, consume: true }] },
+        ns_granary_guard: { text: '出すとこのラウンドの被害-4、議会資金+3。一度使うと消え、このランでは二度と現れない', fx: [{ shield: 4, consume: true }, { funds: 3 }] },
         apocalypse: { text: '取り込んだ災害1つにつき倍率+0.8。全型を取り込んだ後のエンドレスでは、必要対策値が1/3' },
         grand_chorus: { base: 3 },
         mirror_of_ages: { text: '発動したとき、それまでの倍率をもう一度掛ける(1手に2回まで)' },
@@ -2303,7 +2314,7 @@
             return (def._up = 'num');
         return (def._up = 'self2');
     }
-    const growExp = u => Math.pow(u, 0.65);
+    const growExp = u => u;
     function runTerms(terms, c, x, k) {
         k = k || 1;
         const kx = v => 1 + (v - 1) * k;
@@ -2545,8 +2556,9 @@
                 sides.push(S => { S.R.shield = (S.R.shield || 0) + t.shield; });
             }
             if (t.halfDamage) {
-                notes.push('被害半減');
-                sides.push(S => { S.R.halfDamage = true; });
+                const hn = t.halfDamage === true ? 1 : t.halfDamage;
+                notes.push(hn === 1 ? '被害半分' : `被害1/${Math.pow(2, hn)}`);
+                sides.push(S => { S.R.dmgHalves = (S.R.dmgHalves || 0) + hn; });
             }
             if (t.revive)
                 sides.push(S => { const d0 = S.regions.find(q => q.dead); if (d0) {
@@ -2925,21 +2937,15 @@
                     r.px = 1 + (r.px - 1) * (def.upRepeat ? f : 1.45);
             }
             const st = c.inst.stamp;
-            let p = (def.base || 0) * (d.rule === 'noUpgrade' ? 1 : baseMulOf(def.id, c.inst.lv || 0)) + (c.inst.g.bb || 0) + (r.p || 0) + (rk2 === 'nishihara' ? 10 : 0) + (st === 'foundation' ? 30 : 0);
+            let p = (def.base || 0) * (d.rule === 'noUpgrade' ? 1 : baseMulOf(def.id, c.inst.lv || 0)) + (c.inst.g.bb || 0) + (r.p || 0) + (rk2 === 'nishihara' ? 10 : 0);
             if (r.pm)
                 p *= r.pm;
-            if (st === 'blue')
-                p *= 1.5;
             if (st === 'red')
                 r.a = (r.a || 0) + 1;
             if (st === 'iron')
                 r.x = (r.x || 1) * 1.2;
             if (st === 'glass')
                 r.x = (r.x || 1) * 2;
-            if (st === 'far')
-                r.a = (r.a || 0) + 0.5 * ctx.cards.filter(q => q !== c && hasRg(q) && q.inst.region !== c.inst.region).length;
-            if (st === 'old')
-                r.a = (r.a || 0) + 0.1 * Math.max(0, S.roundNo - (c.inst.stampedAt || S.roundNo));
             if (rk2 === 'hokurei' && S.stats.hkGone)
                 r.a = (r.a || 0) + 0.1 * S.stats.hkGone;
             if (rk2 === 'kawanaka')
@@ -3506,9 +3512,12 @@
                 S.betMult = 1;
                 dmg = Math.ceil(maxDamage(S, d) * 0.6 * (1 - Math.min(ratio, 1) * 0.5));
                 if (owned(S, 'house')) {
-                    dmg = Math.ceil(dmg / 2);
+                    dmg = Math.ceil(dmg / (ownedUp(S, 'house') ? 4 : 2));
                     S.funds += ownedUp(S, 'house') ? 6 : 3;
-                    log(S, '胴元は負けの一部を回収した。');
+                    log(S, '胴元は負けの一部を回収し、そのまま姿を消した。');
+                    const hs = S.deck.find(q => q.id === 'house');
+                    if (hs)
+                        removeCard(S, hs);
                 }
             }
         }
@@ -3524,8 +3533,8 @@
             S.stats.fails = (S.stats.fails || 0) + 1;
         if (dmg > 0 && R.shield)
             dmg = Math.max(0, dmg - R.shield);
-        if (dmg > 0 && R.halfDamage)
-            dmg = Math.ceil(dmg / 2);
+        if (dmg > 0 && R.dmgHalves)
+            dmg = Math.ceil(dmg / Math.pow(2, R.dmgHalves));
         S.hand.forEach(u => { const k = cardByUid(S, u); if (k)
             k.g.held = (k.g.held || 0) + 1; });
         if (dmg > 0) {
@@ -3539,6 +3548,10 @@
                 S.stats.damageTaken = (S.stats.damageTaken || 0) + dmg;
                 const deadBefore = S.regions.filter(q => q.dead).length;
                 applyDamage(S, dmg, d.boss || d.winter);
+                if (collapseCheck(S)) {
+                    R.dmg = dmg;
+                    return gameOver(S, 'collapse');
+                }
                 emit(S, 'damage', dmg);
                 const nd = S.regions.filter(q => q.dead).length - deadBefore;
                 if (nd > 0)

@@ -260,7 +260,8 @@
         const plainUp = plain || d.upKind === 'base3';
         const base = Math.round((d.base || 0) * E.baseMulOf(id, lv) + (o.bb || 0) + (S && S.stats ? E.extraBase(S, id, lv) : 0));
         const lvTag = lv ? (d.upRepeat ? `<span class="c-lv rep">◇${lv}</span>` : '<span class="c-lv">◆</span>') : (d.evolve ? '<span class="c-lv evo">◇</span>' : '');
-        return `<div class="card cat-${cat} r-${d.rarity} ${o.cls || ''}"${attrs}${o.style ? ` style="${o.style}"` : ''}>
+        const stv = o.stamp && E.STAMP[o.stamp] ? o.stamp : '';
+        return `<div class="card cat-${cat} r-${d.rarity} ${stv ? `stamped st-${stv}` : ''} ${o.cls || ''}"${attrs}${o.style ? ` style="${o.style}"` : ''}>${stv ? '<i class="c-stfx"></i><i class="c-stfx2"></i><i class="c-stfx3"></i>' : ''}
     ${o.badge ? `<div class="c-badge">${o.badge}</div>` : ''}${statusHTML(o)}${/\bsel\b/.test(o.cls || '') ? '<div class="c-selmark">出す</div>' : ''}${o.stamp ? `<div class="c-seal">${sealHTML(o.stamp)}</div>` : ''}
     ${o.noArt ? '' : cardArt(d, o.region)}
     <div class="c-head"><div class="c-base"><b>${base}</b><span>基礎</span></div><div class="c-title"><span class="c-name">${esc(d.name)}</span>${lvTag}</div></div>
@@ -604,6 +605,7 @@
         ui.prevPhase = S.phase;
         ui.prevPhaseForEnter = S.phase;
         afterRender();
+        fitHand();
         toastNewLogs();
         if (ui.fxNow.tally)
             animateNumbers();
@@ -618,6 +620,39 @@
         }
         settleDeal();
     }
+    function fitHand() {
+        const h = document.querySelector && document.querySelector('.hand-fan');
+        if (!h)
+            return;
+        const cards = Array.from(h.children).filter(el => el.classList && el.classList.contains('card'));
+        const n = cards.length;
+        if (n < 2)
+            return;
+        const cw = cards[0].offsetWidth || 152, r = h.getBoundingClientRect();
+        let left = r.left + 24, right = r.right - 24;
+        const tp = document.querySelector('.turnpanel');
+        if (tp) {
+            const t = tp.getBoundingClientRect();
+            if (t.width && t.top < r.bottom && t.left > r.left + r.width / 2)
+                right = Math.min(right, t.left - 12);
+        }
+        const avail = Math.max(cw * 1.6, right - left);
+        const base = n > 8 ? 42 : n > 6 ? 30 : n > 4 ? 18 : 6;
+        const need = (n * cw - avail) / (2 * (n - 1));
+        const ov = Math.min((cw - 22) / 2, Math.max(base, need));
+        cards.forEach(c => c.style.setProperty('--ov', ov.toFixed(1) + 'px'));
+        if (tp && right < r.right - 24) {
+            const shift = (r.right - 24 - right) / 2;
+            h.style.setProperty('margin-right', (shift * 2).toFixed(0) + 'px');
+        }
+        else
+            h.style.removeProperty('margin-right');
+    }
+    if (typeof window !== 'undefined' && window.addEventListener)
+        window.addEventListener('resize', () => { try {
+            fitHand();
+        }
+        catch (e) { } });
     function settleDeal() {
         if (!document.querySelectorAll)
             return;
@@ -650,6 +685,7 @@
         const selBad = ui.sel.some(u => !E.cursePlayable((E.cardByUid(S, u) || {}).id));
         const n = S.hand.length;
         const ov = n > 8 ? 42 : n > 6 ? 30 : n > 4 ? 18 : 6;
+        const half = Math.max(1, (n - 1) / 2), rStep = Math.min(3.2, 13 / half), yStep = Math.min(2.2, 34 / (half * half));
         let dealt = 0;
         const hand = S.hand.map((u, i) => {
             const inst = E.cardByUid(S, u);
@@ -657,7 +693,7 @@
             const off = i - (n - 1) / 2;
             const isNew = !ui.prevHand.includes(u);
             const cls = (k >= 0 ? 'sel ' : '') + (isNew ? 'deal' : '');
-            const style = `--r:${(off * 3.2).toFixed(1)}deg;--y:${(Math.abs(off) * Math.abs(off) * 2.2).toFixed(1)}px;--ov:${ov}px;--z:${i + 1}${isNew ? `;animation-delay:${(dealt++) * 70}ms` : `;animation-delay:${-((Date.now() + i * 1100) % 3200)}ms`}`;
+            const style = `--r:${(off * rStep).toFixed(1)}deg;--y:${(Math.abs(off) * Math.abs(off) * yStep).toFixed(1)}px;--ov:${ov}px;--z:${i + 1}${isNew ? `;animation-delay:${(dealt++) * 70}ms` : `;animation-delay:${-((Date.now() + i * 1100) % 3200)}ms`}`;
             return cardHTML(inst.id, { act: 'hand', uid: u, region: inst.region, stamp: inst.stamp, bb: inst.g.bb, held: inst.g.held, counter: counterText(inst), cls, badge: k >= 0 ? String(k + 1) : '', lv: inst.lv, style });
         }).join('');
         ui.prevHand = S.hand.slice();
@@ -748,7 +784,7 @@
                 return finish();
             const st = A.steps[k];
             const dur = A.fast ? 35 : Math.max(55, 440 * Math.pow(0.86, k));
-            let el = st.uid != null ? gid('tc-' + st.uid) : st.fuid != null ? gid('fac-' + st.fuid) : gid('tally');
+            let el = st.uid != null ? (gid('tc-' + st.uid) || document.querySelector(`.hand-fan .card[data-uid="${st.uid}"]`)) : st.fuid != null ? gid('fac-' + st.fuid) : gid('tally');
             const pm = Math.max(1, (st.P || 0) * (st.M || 1)), req = Math.max(10, S.R ? S.R.req : 1000);
             const heat = Math.max(0, Math.min(2, Math.log10(pm) / Math.log10(req)));
             const grow = pm / Math.max(1, A.lastPM || 1);
@@ -929,14 +965,10 @@
     const SEAL_PIX = {
         gold: ['...#####...', '.#########.', '.#########.', '###########', '####...####', '####...####', '####...####', '###########', '.#########.', '.#########.', '...#####...'],
         red: ['....###....', '....###....', '....###....', '....###....', '###########', '###########', '###########', '....###....', '....###....', '....###....', '....###....'],
-        blue: ['.....#.....', '....###....', '...#####...', '..#######..', '.#########.', '....###....', '....###....', '....###....', '...........', '###########', '###########'],
-        foundation: ['...........', '..#######..', '..#######..', '...........', '.####.####.', '.####.####.', '...........', '#####.#####', '#####.#####', '...........', '###########'],
-        iron: ['...........', '##########.', '###########', '.#########.', '...#####...', '....###....', '....###....', '...#####...', '..#######..', '..#######..', '...........'],
+        iron: ['...........', '...........', '.###...###.', '#...#.#...#', '#..#####..#', '#..#.#.#..#', '#..#####..#', '#...#.#...#', '.###...###.', '...........', '...........'],
         twin: ['...........', '...........', '..#.....#..', '.###...###.', '#####.#####', '#####.#####', '.###...###.', '..#.....#..', '...........', '...........', '...........'],
         bond: ['...........', '...........', '###.....###', '###.....###', '###########', '###########', '###.....###', '###.....###', '...........', '...........', '...........'],
         people: ['....###....', '...#####...', '...#####...', '...#####...', '....###....', '...........', '..#######..', '.#########.', '###########', '###########', '###########'],
-        far: ['...........', '...........', '..#.....#..', '.##.....##.', '###########', '###########', '.##.....##.', '..#.....#..', '...........', '...........', '...........'],
-        old: ['###########', '.#########.', '..#.....#..', '...#...#...', '....#.#....', '.....#.....', '....#.#....', '...#.#.#...', '..#.###.#..', '.#########.', '###########'],
         shadow: ['...#####...', '.#####.....', '.####......', '####.......', '####.......', '####.......', '####.......', '####.......', '.####......', '.#####.....', '...#####...'],
         glass: ['...........', '..#######..', '.##.###.##.', '###########', '.#.#####.#.', '..#.###.#..', '...#.#.#...', '....###....', '.....#.....', '...........', '...........'],
         lucky: ['.###...###.', '#####.#####', '#####.#####', '.#########.', '....###....', '.#########.', '#####.#####', '#####.#####', '.###.#.###.', '.....#.....', '....#......']
@@ -1230,8 +1262,9 @@
         ['もう一度発動', () => `
     <p>「もう一度発動」は、指したカードの効果を、その場でもう一度丸ごと起こす(基礎の対応力も、倍率+も倍率×も、もう一度入る)。</p>
     ${rbFig(`<div class="rb-seq">${[['1', '北嶺のカード'], ['2', '倍率×のカード'], ['3', '再演'], ['4', '呼応(北嶺)']].map(([n, t]) => `<div><b>${n}</b>${t}</div>`).join('')}</div>
-      <ul class="rb-list"><li>再演(3番)は、直前に選んだ2番をもう一度発動する</li><li>呼応(4番)は、同じ地方のカードのうち最初に選んだ1番をもう一度発動する</li><li>合唱のような「先に選んだカードすべて」は、自分より小さい番号のカード全部</li><li>主権の分有のような「全部が発動し終えたあと」の効果は、最後にまとめて起きる</li></ul>`, '向き先は、選んだ順(カードの番号)で決まる')}
-    <p>もう一度発動したカードがもう一度発動の効果を持っていれば、その効果も起きる(重なりは${E.RETRIG_DEPTH}段まで)。1枚のカードがもう一度発動できるのは1手のうち${E.RETRIG_PER_CARD}回まで、1手全体では${E.RETRIG_TOTAL}回まで。</p>`],
+      <ul class="rb-list"><li>再演(3番)は、直前に選んだ2番をもう一度発動する</li><li>呼応(4番)は、同じ地方のカードのうち最初に選んだ1番をもう一度発動する</li><li>大合唱のような「先に選んだカードすべて」は、自分より小さい番号のカード全部</li><li>主権の分有のような「全部が発動し終えたあと」の効果は、最後にまとめて起きる</li></ul>`, '向き先は、選んだ順(カードの番号)で決まる')}
+    <p>もう一度発動したカードがもう一度発動の効果を持っていれば、その効果も起きる(重なりは${E.RETRIG_DEPTH}段まで)。1枚のカードがもう一度発動できるのは1手のうち${E.RETRIG_PER_CARD}回まで、1手全体では${E.RETRIG_TOTAL}回まで。</p>
+    <p>被害を半分や1/4にする効果も、もう一度発動すると重なる。半分の効果が2回起きれば被害は1/4、3回起きれば1/8になる。</p>`],
         ['地方と関係', () => `
     ${rbFig(`<table class="reltab rb-rel"><thead><tr><th></th><th style="--rc:#4f6f8f"><span>北嶺</span></th><th style="--rc:#a0612a"><span>東浦</span></th><th style="--rc:#2f7f7a"><span>南湊</span></th></tr></thead><tbody>
       <tr><th class="rh" style="--rc:#4f6f8f"><span class="rn">北嶺 ${mk(1)}</span><span class="rhp">${rbPips(6, 5)}</span><span class="rtr">信5</span></th><td class="self"></td><td class="rc bad" style="--k:.1">-1</td><td class="rc mid" style="--k:.2">+2 ${mk(2)}</td></tr>
